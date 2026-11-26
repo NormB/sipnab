@@ -1637,6 +1637,11 @@ pub(in crate::tui) fn capture_health_text(q: &crate::output::prometheus::Capture
     );
     let _ = writeln!(
         out,
+        "    Incomplete IP datagrams:      {}",
+        q.incomplete_ip_datagrams
+    );
+    let _ = writeln!(
+        out,
         "    Corrupt timestamps:           {}",
         q.invalid_timestamps
     );
@@ -3846,6 +3851,24 @@ mod tests {
         assert!(
             !clean.contains("DEGRADED"),
             "a clean capture is not marked degraded:\n{clean}"
+        );
+        Ok(())
+    }
+
+    /// Issue #926: the panel shows datagrams whose later fragments never
+    /// arrived, with the loss counters.
+    #[test]
+    fn capture_health_text_shows_incomplete_ip_datagrams() -> Result<(), TestError> {
+        use crate::output::prometheus::CaptureQuality;
+
+        let q = CaptureQuality {
+            incomplete_ip_datagrams: 926,
+            ..Default::default()
+        };
+        let text = capture_health_text(&q);
+        assert!(
+            text.contains("Incomplete IP datagrams:      926"),
+            "the incomplete-datagram count is a row of its own:\n{text}"
         );
         Ok(())
     }

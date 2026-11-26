@@ -6911,6 +6911,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "incomplete_ip_datagrams": {
+            "description": "IP datagrams whose first fragment was captured and whose later\nfragments never arrived.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "interface_dropped_packets": {
             "description": "Packets the interface dropped.",
             "format": "int64",
@@ -6966,6 +6972,7 @@
           "invalid_timestamps",
           "undecodable_frames",
           "snapped_frames",
+          "incomplete_ip_datagrams",
           "unanswered_nat_requests",
           "lapsed_turn_allocations",
           "lapsed_turn_allocation_streams",

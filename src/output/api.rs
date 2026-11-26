@@ -6139,6 +6139,7 @@ async fn get_stats(
             "invalid_timestamps": quality.invalid_timestamps,
             "undecodable_frames": quality.undecodable_frames,
             "snapped_frames": quality.snapped_frames,
+            "incomplete_ip_datagrams": quality.incomplete_ip_datagrams,
             "unanswered_nat_requests": quality.unanswered_nat_requests,
             "lapsed_turn_allocations": quality.lapsed_turn_allocations,
             "lapsed_turn_allocation_streams": quality.lapsed_turn_allocation_streams,
@@ -7973,6 +7974,9 @@ pub mod schema {
         pub undecodable_frames: u64,
         /// Frames truncated by the capture snap length.
         pub snapped_frames: u64,
+        /// IP datagrams whose first fragment was captured and whose later
+        /// fragments never arrived.
+        pub incomplete_ip_datagrams: u64,
         /// NAT-keepalive requests that never drew a response.
         pub unanswered_nat_requests: u64,
         /// TURN allocations observed expiring.
@@ -13639,6 +13643,10 @@ mod tests {
             // A snaplen cut these short: they arrived, and the payload did
             // not. Distinct from loss, and from a decode failure.
             "snapped_frames",
+            // The first fragment of a datagram arrived and the rest never
+            // did (issue #926): a SIP request lost to a port-based capture
+            // filter, which no other count here showed.
+            "incomplete_ip_datagrams",
             // About the NETWORK, not the capture: STUN/TURN transactions sent
             // with no reply. An agent reading a one-way-audio complaint needs
             // this, and it used to exist only as a log line.

@@ -3175,6 +3175,12 @@ pub struct CaptureQualityJson {
     /// payload is what is missing. An agent reading "no RTP payload" needs
     /// this to tell a silent call from a headers-only capture.
     pub snapped_frames: u64,
+    /// IP datagrams whose first fragment was captured and whose later
+    /// fragments never arrived (issue #926). Non-zero is the sign of a
+    /// port-based capture filter on a link that fragments large SIP
+    /// messages: the requests are missing while their replies are not, and
+    /// every other count here reads zero.
+    pub incomplete_ip_datagrams: u64,
     /// STUN/TURN transactions sent with no reply.
     ///
     /// The only field here about the NETWORK rather than the capture: these
@@ -3224,6 +3230,7 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
             invalid_timestamps: q.invalid_timestamps,
             undecodable_frames: q.undecodable_frames,
             snapped_frames: q.snapped_frames,
+            incomplete_ip_datagrams: q.incomplete_ip_datagrams,
             unanswered_nat_requests: q.unanswered_nat_requests,
             lapsed_turn_allocations: q.lapsed_turn_allocations,
             lapsed_turn_allocation_streams: q.lapsed_turn_allocation_streams,
@@ -9328,7 +9335,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 51 Prometheus metrics and the listener that serves them
+    /// sipnab exports 52 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.
@@ -17166,6 +17173,10 @@ mod tests {
             // A snaplen cut these short: they arrived, and the payload did
             // not. Distinct from loss, and from a decode failure.
             "snapped_frames",
+            // The first fragment of a datagram arrived and the rest never
+            // did (issue #926): a SIP request lost to a port-based capture
+            // filter, which no other count here showed.
+            "incomplete_ip_datagrams",
             // About the NETWORK, not the capture: STUN/TURN transactions sent
             // with no reply. An agent reading a one-way-audio complaint needs
             // this, and it used to exist only as a log line.

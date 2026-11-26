@@ -134,7 +134,7 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,959 | 62,358 |
+| core | 9 | 12,959 | 62,752 |
 | signaling | 22 | 24,046 | 80,515 |
 | captures | 11 | 12,723 | 30,259 |
 | security | 6 | 10,046 | 10,046 |
@@ -144,7 +144,7 @@ resource.
 | server | 6 | 5,976 | 38,359 |
 | vcon | 7 | 10,806 | 34,674 |
 | tls | 3 | 2,903 | 5,009 |
-| full | 80 | 93,644 | 335,774 |
+| full | 80 | 93,644 | 336,168 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.

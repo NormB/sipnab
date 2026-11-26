@@ -6794,6 +6794,14 @@ Part of the capture-quality summary. `{intact_undecodable}` frames arrived compl
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `{datagrams} IP datagram(s) arrived as a first fragment whose later fragments never did, so a SIP message in them is missing (a capture filter that tests ports passes only first fragments: append "or {}" to it, or capture without a filter)`
+
+Part of the capture-quality summary. `{datagrams}` IP datagrams arrived as a first fragment, and the rest of each datagram never arrived. sipnab could not reassemble them, so a SIP message larger than the path MTU is missing. The usual cause is a capture filter that tests ports: only the first fragment carries the ports, so the kernel drops the later fragments. The `{}` is the clause `(ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)`. The same count is `incomplete_ip_datagrams` in `capture_status` and the REST capture-quality block, and `sipnab_capture_incomplete_ip_datagrams_total` on `/metrics`.
+
+**What to do:** If you gave your own capture filter, append the clause to it, or capture without a filter so that sipnab generates one that passes fragments. If you set no filter, the capture point missed the fragments: capture closer to the traffic. See [Requests missing, replies present](@/docs/troubleshooting.md#requests-missing-replies-present).
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message or TLS record behind each, and a message the hole cut is lost (packets the capture point missed)`
 
 Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it, or, in a build with the `tls` feature, at the next TLS record. A SIP message that a gap cuts through goes missing from the analysis.

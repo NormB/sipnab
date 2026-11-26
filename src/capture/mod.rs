@@ -30,6 +30,8 @@ pub mod fanout;
 #[cfg(feature = "native")]
 pub mod file;
 #[cfg(feature = "native")]
+pub mod fragment_filter;
+#[cfg(feature = "native")]
 pub(crate) mod frames;
 #[cfg(feature = "hep")]
 pub mod hep;
@@ -1071,14 +1073,15 @@ pub fn undecodable_report() -> UndecodableReport {
 ///
 /// # Side effects
 ///
-/// Zeroes the total, both scalar reasons, the two snapped counts, and every
-/// slot of the three keyed tables.
+/// Zeroes the total, both scalar reasons, the two snapped counts, the
+/// incomplete IP datagram count, and every slot of the three keyed tables.
 pub fn reset_undecodable_frames() {
     UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
     SNAPPED_FRAMES.store(0, Ordering::Relaxed);
     SNAPPED_UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
     TRUNCATED_FRAMES.store(0, Ordering::Relaxed);
     DECODE_ERRORS.store(0, Ordering::Relaxed);
+    reassembly::reset_incomplete_ip_datagrams();
     UNSUPPORTED_LINK_TYPE.reset();
     NOT_IP.reset();
     NO_TRANSPORT.reset();
@@ -1910,6 +1913,9 @@ impl PacketProcessor {
     /// a stream that does not carry SIP -- the same two shapes a flush during
     /// the capture produces.
     pub fn finish(&mut self) -> ParsedPackets {
+        // No later fragment can arrive now: count each datagram whose first
+        // fragment is held as incomplete (issue #926).
+        self.fragment_reassembler.finish();
         let mut out = ParsedPackets::new();
         for (template, data) in self.tcp_reassembler.finish() {
             let src = std::net::SocketAddr::new(template.src_addr, template.src_port);
@@ -1937,6 +1943,12 @@ impl PacketProcessor {
             }
         }
         out
+    }
+
+    /// The fragment reassembler, for tests that drive it through a processor.
+    #[cfg(test)]
+    pub(crate) fn fragment_reassembler_for_test(&mut self) -> &mut FragmentReassembler {
+        &mut self.fragment_reassembler
     }
 
     /// Sweep stale entries from both reassemblers.

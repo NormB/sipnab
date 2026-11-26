@@ -3126,7 +3126,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 51 Prometheus metrics. The listener that serves them is off
+sipnab exports 52 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -3972,6 +3972,7 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "invalid_timestamps": 0,
     "undecodable_frames": 0,
     "snapped_frames": 0,
+    "incomplete_ip_datagrams": 0,
     "unanswered_nat_requests": 0,
     "lapsed_turn_allocations": 0,
     "lapsed_turn_allocation_streams": 0,
@@ -4247,6 +4248,15 @@ came in truncated.
 - Raise `--snaplen` when you
   need RTP payload, audio export, or a faithful `-O` re-emit.
 
+`incomplete_ip_datagrams` counts IP datagrams whose first fragment arrived and
+whose later fragments never did.
+
+- A SIP message in such a datagram is missing from every view.
+- The usual cause is a capture filter that tests ports: only the first
+  fragment carries them.
+- [Requests missing, replies present](@/docs/troubleshooting.md#requests-missing-replies-present)
+  gives the filter clause that fixes it.
+
 The last four keys are the only ones in this block about the **network** rather
 than about the capture. Those frames arrived perfectly. What each key
 describes went wrong on the wire:
@@ -4267,7 +4277,8 @@ All four fall as well as rise.
 - [Prometheus Metrics](@/docs/metrics.md) publishes
   the same four numbers as gauges for a scrape.
 
-Neither `snapped_frames` nor any of those four counts toward `degraded`.
+Neither `snapped_frames`, `incomplete_ip_datagrams` nor any of those four
+counts toward `degraded`.
 It stays a statement about packets this host lost.
 
 `degraded` is `true` when any of the three is non-zero.

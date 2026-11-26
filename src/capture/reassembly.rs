@@ -39,6 +39,35 @@ pub fn reassembly_timeouts() -> u64 {
     REASSEMBLY_TIMEOUTS.load(Ordering::Relaxed)
 }
 
+/// IP datagrams whose first fragment was held and which were discarded
+/// before they completed, exported as `sipnab_incomplete_ip_datagrams_total`
+/// and as `incomplete_ip_datagrams` in the capture-quality block.
+///
+/// The loss a port-based capture filter causes (issue #926): it passes the
+/// first fragment of a large SIP message, which carries the ports, and
+/// drops the rest in the kernel, so the message never completes. The kernel
+/// dropped nothing and every frame decoded, so every other counter stayed
+/// at zero while requests went missing.
+///
+/// Counted where an entry is discarded (TTL sweep, capacity eviction,
+/// overlap, oversize, and the end of the input), never per packet. Only
+/// entries that hold the first fragment count: later fragments without it
+/// say nothing about which message was lost.
+static INCOMPLETE_IP_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
+
+/// IP datagrams whose first fragment was held and which never completed,
+/// since start or the last [`reset_incomplete_ip_datagrams`].
+#[must_use]
+pub fn incomplete_ip_datagrams() -> u64 {
+    INCOMPLETE_IP_DATAGRAMS.load(Ordering::Relaxed)
+}
+
+/// Clear [`incomplete_ip_datagrams`], with the rest of the capture-quality
+/// tally (see `crate::capture::reset_undecodable_frames`).
+pub fn reset_incomplete_ip_datagrams() {
+    INCOMPLETE_IP_DATAGRAMS.store(0, Ordering::Relaxed);
+}
+
 // ── Constants ─────────────────────────────────────────────────────────
 
 /// Maximum reassembled datagram size (64 KB, per IP spec).
@@ -216,6 +245,12 @@ enum FragmentOverlap {
 }
 
 impl FragmentEntry {
+    /// Whether the first fragment (offset 0) is held: the one with the
+    /// transport header, so the one that names the message that was lost.
+    fn holds_first(&self) -> bool {
+        self.fragments.iter().any(|(off, _, _)| *off == 0)
+    }
+
     /// Check a new fragment at `byte_offset` against the held fragments.
     fn overlap(&self, byte_offset: usize, payload: &bytes::Bytes, ends: bool) -> FragmentOverlap {
         let new_end = byte_offset + payload.len();
@@ -282,6 +317,9 @@ pub struct FragmentReassembler {
     max_entries: usize,
     /// Age at which an incomplete entry is swept.
     ttl: Duration,
+    /// Datagrams this reassembler discarded while holding their first
+    /// fragment; the process-wide [`INCOMPLETE_IP_DATAGRAMS`] is the sum.
+    incomplete: u64,
 }
 
 impl FragmentReassembler {
@@ -291,6 +329,7 @@ impl FragmentReassembler {
             entries: HashMap::new(),
             max_entries: DEFAULT_MAX_ENTRIES,
             ttl: DEFAULT_TTL,
+            incomplete: 0,
         }
     }
 
@@ -300,6 +339,7 @@ impl FragmentReassembler {
             entries: HashMap::new(),
             max_entries,
             ttl,
+            incomplete: 0,
         }
     }
 
@@ -387,7 +427,7 @@ impl FragmentReassembler {
                     parsed.src_addr,
                     parsed.dst_addr,
                 );
-                self.entries.remove(key);
+                self.discard(key);
                 return None;
             }
         }
@@ -423,7 +463,7 @@ impl FragmentReassembler {
                 parsed.src_addr,
                 parsed.dst_addr,
             );
-            self.entries.remove(key);
+            self.discard(key);
             return None;
         }
 
@@ -450,12 +490,64 @@ impl FragmentReassembler {
     pub fn sweep(&mut self) {
         let now = Instant::now();
         let before = self.entries.len();
-        self.entries
-            .retain(|_key, entry| now.duration_since(entry.created) < self.ttl);
+        let ttl = self.ttl;
+        let mut lost = 0u64;
+        self.entries.retain(|_key, entry| {
+            let keep = now.duration_since(entry.created) < ttl;
+            if !keep && entry.holds_first() {
+                lost += 1;
+            }
+            keep
+        });
+        self.note_incomplete(lost);
         let evicted = before - self.entries.len();
         if evicted > 0 {
             super::tally(&REASSEMBLY_TIMEOUTS, evicted as u64);
             tracing::debug!("Fragment reassembler: swept {evicted} stale entries");
+        }
+    }
+
+    /// Release every held entry at the end of the input.
+    ///
+    /// No later fragment can arrive once the input has ended, so each held
+    /// datagram is lost. Those that hold their first fragment are counted
+    /// as incomplete: a capture shorter than the TTL (`--duration 14s`
+    /// against the 30-second default) never sweeps them, and before this
+    /// the issue #926 run ended with every counter at zero.
+    ///
+    /// # Side effects
+    ///
+    /// Empties the entry map and adds to [`incomplete_ip_datagrams`].
+    pub fn finish(&mut self) {
+        let lost = self.entries.values().filter(|e| e.holds_first()).count() as u64;
+        self.entries.clear();
+        self.note_incomplete(lost);
+    }
+
+    /// Incomplete datagrams this reassembler discarded, its share of
+    /// [`incomplete_ip_datagrams`]. Tests read it: the process-wide count is
+    /// shared by every reassembler a test run creates.
+    #[cfg(test)]
+    pub(crate) fn incomplete_datagrams(&self) -> u64 {
+        self.incomplete
+    }
+
+    /// Drop the entry under `key` before it completed, counting it when it
+    /// holds the first fragment.
+    fn discard(&mut self, key: &FragmentKey) {
+        if self.entries.remove(key).is_some_and(|e| e.holds_first()) {
+            self.note_incomplete(1);
+        }
+    }
+
+    /// Add `n` lost datagrams to this reassembler's count and the
+    /// process-wide one. The process-wide add goes through
+    /// `crate::capture::tally`, so a `--cores` worker reading another
+    /// worker's copy does not count it twice.
+    fn note_incomplete(&mut self, n: u64) {
+        if n > 0 {
+            self.incomplete += n;
+            super::tally(&INCOMPLETE_IP_DATAGRAMS, n);
         }
     }
 
@@ -484,7 +576,7 @@ impl FragmentReassembler {
             .collect();
         by_age.sort_unstable_by_key(|a| a.0);
         for (_, key) in by_age.into_iter().take(batch) {
-            self.entries.remove(&key);
+            self.discard(&key);
         }
         tracing::warn!(
             "Fragment reassembler at capacity ({}); evicted {batch} oldest \
@@ -2341,5 +2433,270 @@ mod tests {
         ));
         assert_eq!(result, vec![b" big world".to_vec()]);
         Ok(())
+    }
+
+    /// The incomplete-datagram count (issue #926): a datagram whose first
+    /// fragment was held and which was discarded before it completed. That
+    /// is what a port-based capture filter leaves behind, a first fragment
+    /// with ports and no later fragments, and before this count nothing at
+    /// all moved.
+    mod incomplete {
+        use super::*;
+
+        /// The two hosts every fragment here travels between.
+        fn hosts() -> (IpAddr, IpAddr) {
+            (
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            )
+        }
+
+        /// The first fragment of datagram `id`: offset 0, More Fragments.
+        fn first(id: u32) -> ParsedPacket {
+            let (s, d) = hosts();
+            make_fragment(s, d, id, 0, true, &[b'A'; 1480])
+        }
+
+        /// A later fragment of datagram `id` at offset 185 units.
+        fn later(id: u32, more: bool) -> ParsedPacket {
+            let (s, d) = hosts();
+            make_fragment(s, d, id, 185, more, &[b'B'; 64])
+        }
+
+        /// A reassembler whose sweep drops every held entry.
+        fn expiring() -> FragmentReassembler {
+            FragmentReassembler::with_limits(DEFAULT_MAX_ENTRIES, Duration::ZERO)
+        }
+
+        // ── success: the loss is counted ───────────────────────────────
+
+        #[test]
+        fn a_first_fragment_that_times_out_is_counted() -> Result<(), TestError> {
+            let mut r = expiring();
+            assert!(
+                r.insert(&first(1)).is_none(),
+                "one fragment does not complete"
+            );
+            r.sweep();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "the swept first fragment is a lost datagram"
+            );
+            assert!(r.is_empty(), "the sweep dropped it");
+            Ok(())
+        }
+
+        #[test]
+        fn a_first_fragment_held_at_the_end_of_the_input_is_counted() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::new();
+            assert!(
+                r.insert(&first(2)).is_none(),
+                "one fragment does not complete"
+            );
+            r.finish();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "a 14-second capture ends before the 30-second TTL: the issue's run"
+            );
+            assert!(r.is_empty(), "finish releases what it held");
+            Ok(())
+        }
+
+        #[test]
+        fn a_first_fragment_evicted_at_capacity_is_counted() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::with_limits(1, DEFAULT_TTL);
+            assert!(r.insert(&first(3)).is_none(), "held");
+            assert!(
+                r.insert(&first(4)).is_none(),
+                "held, evicting the first entry"
+            );
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "the evicted first fragment is counted"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_datagram_dropped_for_an_overlap_is_counted() -> Result<(), TestError> {
+            let (s, d) = hosts();
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(5)).is_none(), "held");
+            let overlap = make_fragment(s, d, 5, 1, true, &[b'C'; 64]);
+            assert!(r.insert(&overlap).is_none(), "the overlap drops the entry");
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "the dropped datagram never completed"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn an_oversized_datagram_is_counted() -> Result<(), TestError> {
+            let (s, d) = hosts();
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(6)).is_none(), "held");
+            let past_64k = make_fragment(s, d, 6, 8191, false, &[b'D'; 64]);
+            assert!(
+                r.insert(&past_64k).is_none(),
+                "an oversized datagram is refused"
+            );
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "the refused datagram never completed"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn several_lost_datagrams_are_counted_once_each() -> Result<(), TestError> {
+            let mut r = expiring();
+            for id in 10..17 {
+                assert!(r.insert(&first(id)).is_none(), "held");
+                assert!(r.insert(&later(id, true)).is_none(), "still a hole between");
+            }
+            r.sweep();
+            r.sweep();
+            r.finish();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                7,
+                "seven datagrams, each counted once"
+            );
+            Ok(())
+        }
+
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn the_process_wide_count_moves_with_the_reassembler() -> Result<(), TestError> {
+            let before = incomplete_ip_datagrams();
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(20)).is_none(), "held");
+            r.finish();
+            assert!(
+                incomplete_ip_datagrams() > before,
+                "capture_status, metrics and the summary read the process-wide count"
+            );
+            Ok(())
+        }
+
+        // ── failure: what is not a lost first fragment ─────────────────
+
+        #[test]
+        fn a_completed_datagram_is_not_counted() -> Result<(), TestError> {
+            let (s, d) = hosts();
+            let mut r = expiring();
+            assert!(r.insert(&first(30)).is_none(), "held");
+            let last = make_fragment(s, d, 30, 185, false, &[b'B'; 64]);
+            assert!(r.insert(&last).is_some(), "the datagram completes");
+            r.sweep();
+            r.finish();
+            assert_eq!(r.incomplete_datagrams(), 0, "nothing was lost");
+            Ok(())
+        }
+
+        #[test]
+        fn later_fragments_without_their_first_are_not_counted() -> Result<(), TestError> {
+            let mut r = expiring();
+            assert!(r.insert(&later(31, true)).is_none(), "held");
+            assert!(r.insert(&later(32, false)).is_none(), "held");
+            r.sweep();
+            r.finish();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                0,
+                "no first fragment was captured, so no SIP message is known to be lost"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn an_entry_still_inside_its_ttl_is_not_counted_by_a_sweep() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(33)).is_none(), "held");
+            r.sweep();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                0,
+                "its later fragments may still arrive"
+            );
+            assert_eq!(r.len(), 1, "still held");
+            Ok(())
+        }
+
+        #[test]
+        fn a_duplicate_first_fragment_is_not_a_second_datagram() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(34)).is_none(), "held");
+            assert!(r.insert(&first(34)).is_none(), "an exact copy is ignored");
+            r.finish();
+            assert_eq!(r.incomplete_datagrams(), 1, "one datagram, counted once");
+            Ok(())
+        }
+
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn an_untallied_copy_does_not_move_the_process_wide_count() -> Result<(), TestError> {
+            let before = incomplete_ip_datagrams();
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(35)).is_none(), "held");
+            crate::capture::untallied(|| r.finish());
+            assert_eq!(
+                incomplete_ip_datagrams(),
+                before,
+                "a --cores worker's copy of another worker's fragment is not counted twice"
+            );
+            Ok(())
+        }
+
+        // ── edge ───────────────────────────────────────────────────────
+
+        #[test]
+        fn finish_twice_counts_once() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(40)).is_none(), "held");
+            r.finish();
+            r.finish();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "the second finish holds nothing"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_first_fragment_that_arrives_last_and_is_lost_is_counted() -> Result<(), TestError> {
+            let (s, d) = hosts();
+            let mut r = expiring();
+            let past_a_hole = make_fragment(s, d, 41, 200, false, &[b'B'; 64]);
+            assert!(r.insert(&past_a_hole).is_none(), "held without its first");
+            assert!(r.insert(&first(41)).is_none(), "a hole remains between");
+            r.sweep();
+            assert_eq!(
+                r.incomplete_datagrams(),
+                1,
+                "order does not matter, the first is held"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn the_processor_finish_counts_the_fragment_reassembler() -> Result<(), TestError> {
+            let mut p = crate::capture::PacketProcessor::new();
+            p.fragment_reassembler_for_test().insert(&first(42));
+            let _ = p.finish();
+            assert_eq!(
+                p.fragment_reassembler_for_test().incomplete_datagrams(),
+                1,
+                "PacketProcessor::finish releases the held fragments too"
+            );
+            Ok(())
+        }
     }
 }

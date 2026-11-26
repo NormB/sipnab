@@ -2118,6 +2118,11 @@ fn capture_quality_summary() -> Option<String> {
         crate::capture::sip_oversize_dropped(),
         crate::pipeline::ws_oversize_frames(),
     );
+    // An eighth: datagrams whose first fragment arrived and whose later
+    // fragments never did (issue #926). Read after the input ended, when
+    // reassembly has given up every held datagram.
+    let incomplete =
+        incomplete_datagram_part(crate::capture::reassembly::incomplete_ip_datagrams());
     if dropped == 0
         && if_dropped == 0
         && bad_ts == 0
@@ -2125,6 +2130,7 @@ fn capture_quality_summary() -> Option<String> {
         && snapped == 0
         && holes == 0
         && oversize.is_empty()
+        && incomplete.is_none()
     {
         return None;
     }
@@ -2189,6 +2195,7 @@ fn capture_quality_summary() -> Option<String> {
         ));
     }
     parts.extend(oversize);
+    parts.extend(incomplete);
 
     Some(format!(
         "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are \
@@ -2196,6 +2203,25 @@ fn capture_quality_summary() -> Option<String> {
          docs/tuning-capture.md.",
         parts.join("; ")
     ))
+}
+
+/// The capture-quality clause for IP datagrams whose first fragment was
+/// captured and whose later fragments never arrived, or `None` for zero.
+///
+/// The most common cause is a capture filter that tests ports (issue #926):
+/// only the first fragment of a datagram carries them, so the filter passed
+/// it and dropped the rest in the kernel, which counts no drop. The clause
+/// names that cause and the clause that fixes a filter of one's own.
+fn incomplete_datagram_part(datagrams: u64) -> Option<String> {
+    (datagrams > 0).then(|| {
+        format!(
+            "{datagrams} IP datagram(s) arrived as a first fragment whose later fragments \
+             never did, so a SIP message in them is missing (a capture filter that tests \
+             ports passes only first fragments: append \"or {}\" to it, or capture without \
+             a filter)",
+            crate::capture::fragment_filter::OPERATOR_FRAGMENT_CLAUSE
+        )
+    })
 }
 
 /// The capture-quality clauses for data dropped at a size limit: SIP/TCP
@@ -21945,6 +21971,83 @@ mod notice_helper_tests {
                  were cut too short to decode at all"
             ),
             "the snapped frame is reported as snapped, and as producing nothing: {msg}"
+        );
+        crate::capture::reset_undecodable_frames();
+        Ok(())
+    }
+
+    /// Issue #926: a request lost to a port-based capture filter left a held
+    /// first fragment and nothing else. The summary names it, the count,
+    /// and the cause to check.
+    #[test]
+    fn the_incomplete_datagram_clause_names_the_count_and_the_filter() -> Result<(), TestError> {
+        let part = incomplete_datagram_part(3).ok_or("three lost datagrams are a finding")?;
+        assert!(
+            part.starts_with("3 IP datagram(s)"),
+            "the count leads: {part}"
+        );
+        assert!(
+            part.contains("first fragment"),
+            "what arrived is named: {part}"
+        );
+        assert!(
+            part.contains("capture filter"),
+            "the likely cause is named: {part}"
+        );
+        assert!(
+            part.contains(crate::capture::fragment_filter::OPERATOR_FRAGMENT_CLAUSE),
+            "the clause that fixes a filter of one's own is given: {part}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_incomplete_datagram_clause_for_zero() -> Result<(), TestError> {
+        assert_eq!(
+            incomplete_datagram_part(0),
+            None,
+            "nothing lost, nothing said"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_incomplete_datagram_is_still_a_finding() -> Result<(), TestError> {
+        let part = incomplete_datagram_part(1).ok_or("one lost datagram is a finding")?;
+        assert!(part.starts_with("1 IP datagram(s)"), "got: {part}");
+        Ok(())
+    }
+
+    /// The summary reads the reassembler's process-wide count: a held first
+    /// fragment at the end of the input makes the run report itself
+    /// incomplete, where before it reported nothing at all.
+    #[test]
+    #[serial_test::serial(invalid_timestamps, kernel_drop_counts, undecodable_tally)]
+    fn a_lost_first_fragment_makes_the_capture_quality_summary_speak() -> Result<(), TestError> {
+        crate::capture::reset_undecodable_frames();
+        assert!(
+            capture_quality_summary().is_none_or(|s| !s.contains("IP datagram")),
+            "nothing held yet"
+        );
+        let mut proc = crate::capture::PacketProcessor::new();
+        let ip = crate::capture::fragment_filter::test_frames::ipv4(
+            17,
+            crate::capture::fragment_filter::test_frames::MF,
+            &[],
+            &crate::capture::fragment_filter::test_frames::udp(5060, 5060, &[b'X'; 1472]),
+        );
+        let frame = crate::capture::fragment_filter::test_frames::on_eth(&ip);
+        let len = frame.len();
+        let packet = crate::capture::Packet::new(chrono::Utc::now(), frame, len, len, None, 1);
+        assert!(
+            proc.process(&packet).is_empty(),
+            "a first fragment alone is held"
+        );
+        let _ = proc.finish();
+        let msg = capture_quality_summary().ok_or("a lost datagram is a quality finding")?;
+        assert!(
+            msg.contains("1 IP datagram(s)"),
+            "the count is reported: {msg}"
         );
         crate::capture::reset_undecodable_frames();
         Ok(())

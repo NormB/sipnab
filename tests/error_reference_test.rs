@@ -1070,7 +1070,10 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // ServerHello messages or sessions.
 // 694 -> 695 (FILE-2 d): +1 in src/app/batch.rs, the line the first failed
 // write to standard output prints while the run goes on.
-const EXPECTED_TEMPLATES: usize = 695;
+// 695 -> 696 (IP fragments, #926): +1 in src/app/batch.rs, the
+// capture-quality part `incomplete_datagram_part` builds for datagrams whose
+// first fragment arrived and whose later fragments never did.
+const EXPECTED_TEMPLATES: usize = 696;
 
 // ---------------------------------------------------------------------------
 // The page gates

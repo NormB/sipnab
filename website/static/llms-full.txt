@@ -6877,6 +6877,7 @@ The metric families:
 | `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp did not parse, which sipnab stamped with the wall clock instead. sipnab loses no packet, but every timing figure from the run reads a substituted clock: post-dial delay, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) jitter, MOS and call duration. |
 | `sipnab_capture_undecodable_frames_total{reason}` | counter | Frames that reached the parser and produced no packet, grouped by reason. Labels are `unsupported_link_type_<dlt>`, `not_ip_ethertype_0x<hhhh>`, `no_transport_ip_protocol_<n>`, `truncated_frame`, `decode_error`, the `_unrecorded` variants of the EtherType and protocol labels (the decoder did not report the number), and `reason_not_retained` for frames past the tally's slot limit, so that `sum()` over the family equals the true total. `unsupported_link_type_0` is a `DLT_NULL` file, which `editcap -T ether` converts. Absent on a capture that decoded cleanly, so alert on `sipnab_capture_undecoded_fraction` instead. Both servers emit it. |
 | `sipnab_capture_snapped_frames_total` | counter | Frames the capture's own `--snaplen` cut short (`caplen < origlen`). The frames arrived and most decoded; what is missing is payload. Raise `--snaplen` if you need RTP payload, audio export, or a faithful `-O` re-emit. |
+| `sipnab_capture_incomplete_ip_datagrams_total` | counter | IP datagrams whose first fragment arrived and whose later fragments never did, counted when reassembly gives them up: at the reassembly TTL, at the entry cap, or at the end of the input. A SIP message in such a datagram is missing. The usual cause is a capture filter that tests ports, which passes only the first fragment; see [Requests missing, replies present](troubleshooting.md#requests-missing-replies-present). |
 | `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never drew a reply. A refusal counts as answered. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the call then has one-way or no audio while signaling looks healthy. A common cause is a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A gauge: a late answer lowers it. |
 | `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted, with no Refresh seen in between. A relay tears an allocation down when its lifetime lapses, and the relayed media stops mid-call with no SIP message to explain it. A capture that started late or lost a packet can miss a Refresh the client sent. A deliberate release (a Refresh with `LIFETIME` 0) is never counted. A gauge: a Refresh seen later lowers it. |
 | `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed: the number of calls a lapse affected. Counted by distinct SSRC inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge: a Refresh seen later lowers it. |
@@ -6920,6 +6921,7 @@ These count events since the process started and only ever climb:
 - `sipnab_capture_sources_refused_total`
 - `sipnab_capture_undecodable_frames_total`
 - `sipnab_capture_snapped_frames_total`
+- `sipnab_capture_incomplete_ip_datagrams_total`
 - the two MCP counters:
   - `sipnab_mcp_tool_calls_total`
   - `sipnab_mcp_tool_response_bytes_total`
@@ -10184,7 +10186,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 51 Prometheus metrics. The listener that serves them is off
+sipnab exports 52 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -11030,6 +11032,7 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "invalid_timestamps": 0,
     "undecodable_frames": 0,
     "snapped_frames": 0,
+    "incomplete_ip_datagrams": 0,
     "unanswered_nat_requests": 0,
     "lapsed_turn_allocations": 0,
     "lapsed_turn_allocation_streams": 0,
@@ -11305,6 +11308,15 @@ came in truncated.
 - Raise `--snaplen` when you
   need RTP payload, audio export, or a faithful `-O` re-emit.
 
+`incomplete_ip_datagrams` counts IP datagrams whose first fragment arrived and
+whose later fragments never did.
+
+- A SIP message in such a datagram is missing from every view.
+- The usual cause is a capture filter that tests ports: only the first
+  fragment carries them.
+- [Requests missing, replies present](troubleshooting.md#requests-missing-replies-present)
+  gives the filter clause that fixes it.
+
 The last four keys are the only ones in this block about the **network** rather
 than about the capture. Those frames arrived perfectly. What each key
 describes went wrong on the wire:
@@ -11325,7 +11337,8 @@ All four fall as well as rise.
 - [Prometheus Metrics](prometheus-metrics.md) publishes
   the same four numbers as gauges for a scrape.
 
-Neither `snapped_frames` nor any of those four counts toward `degraded`.
+Neither `snapped_frames`, `incomplete_ip_datagrams` nor any of those four
+counts toward `degraded`.
 It stays a statement about packets this host lost.
 
 `degraded` is `true` when any of the three is non-zero.
@@ -16246,6 +16259,7 @@ the cause from there.
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
+| Large requests (an INVITE with a big SDP) are missing and their replies are there | [Requests missing, replies present](#requests-missing-replies-present) |
 | A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | The two legs of a call through OpenSIPS `topology_hiding("C")` do not join | [Troubleshooting the OpenSIPS mapping](opensips-sipnab.md#6-troubleshooting), or [Decode the hidden Call-ID](opensips-sipnab.md#decode-the-hidden-call-id) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
@@ -17466,6 +17480,74 @@ IPv4 header with options. Untagged IPv4 with options matches.
 To confirm which of these you are looking at, run the generated filter and a
 plain `portrange` over the same capture with `tcpdump -r`, and compare the
 counts.
+
+## Requests missing, replies present
+
+A live capture shows a dialog with its replies but without the request that
+started it. The missing requests are the large ones: an INVITE with a large SDP
+body, a request with many `Via` or `Record-Route` headers, a MESSAGE with a
+large body. Reading a capture file of the same traffic with `-I` shows them.
+
+**Purpose.** Get every fragment of a SIP message larger than the path MTU to
+reassembly, and see when the capture lost a message this way.
+
+**Why it happens.** A UDP datagram larger than the MTU travels as IP
+fragments. Only the first fragment carries the UDP header and its ports.
+A capture filter that tests ports (`port 5060`, `portrange 5060-5061`) passes
+the first fragment and rejects the others in the kernel. Reassembly never
+gets them, and the kernel does not count them as dropped.
+
+**Prerequisites.**
+
+- sipnab 0.5.276 or later. Older releases generate a filter that drops the
+  later fragments too.
+- No change on the SIP servers or the network. To confirm that the traffic is
+  fragmented, `tcpdump` on the capture host helps.
+
+**Steps.**
+
+1. Check whether you gave a capture filter of your own: an expression after
+   the options, `--bpf-file`, or `[capture] bpf_filter` in the configuration.
+2. If you did not, the filter sipnab generates passes IP fragments of UDP, TCP
+   and ESP, inside VLAN, QinQ, PPPoE and MPLS too. You need nothing else.
+3. If you did, sipnab warns at startup when the filter tests ports and passes
+   no later fragment, and the warning gives the filter to use instead:
+
+   ```text
+   Your BPF filter is used as given and was not modified. Note that a port-based filter is matched against the outer headers only: it will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets are dropped in the kernel where no sipnab counter can report them. Drop the filter to get sipnab's encapsulation-aware one, or add --capture-tunnels for UDP-tunneled signaling. A port-based filter also does not match the later fragments of an IP datagram, which carry no ports, so a SIP message larger than the path MTU is dropped in the kernel after its first fragment and never reassembled (counted as incomplete_ip_datagrams). To keep those fragments, use this filter: (port 5060 or port 5061) or (ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)
+   ```
+
+   Append the clause to your filter, or drop the filter:
+
+   ```bash
+   sudo sipnab -N -d eth0 '(port 5060 or port 5061) or (ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)'
+   ```
+
+**Verify.**
+
+- The end-of-run summary has no `IP datagram(s) arrived as a first fragment`
+  part.
+- `capture_status` (MCP) and the REST capture-quality block report
+  `incomplete_ip_datagrams: 0`, and `/metrics` reports
+  `sipnab_capture_incomplete_ip_datagrams_total 0`.
+- The dialogs that lacked their request now hold it.
+
+**Troubleshoot.**
+
+- `incomplete_ip_datagrams` is not zero with no filter of your own: the
+  capture point missed fragments. Check the kernel and interface drop counts
+  beside it, then capture closer to the traffic.
+- The fragments arrive with the Fragment header behind two or more IPv6
+  extension headers: classic BPF cannot walk that chain, so the generated
+  filter does not match them. Capture without a filter for that traffic.
+- `--no-reassembly` reads each fragment on its own, so a fragmented request
+  never reads as one message. Remove it.
+- On a run that takes signaling from `--hep-listen` and media from `-d`, the
+  interface filter passes media only, so it takes no SIP fragments. The HEP
+  sender delivers each SIP message whole.
+
+[The generated filter passes IP fragments](encapsulations.md#the-generated-filter-passes-ip-fragments)
+describes the filter terms.
 
 ## An archive of captures
 
@@ -31572,6 +31654,14 @@ Part of the capture-quality summary. `{intact_undecodable}` frames arrived compl
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `{datagrams} IP datagram(s) arrived as a first fragment whose later fragments never did, so a SIP message in them is missing (a capture filter that tests ports passes only first fragments: append "or {}" to it, or capture without a filter)`
+
+Part of the capture-quality summary. `{datagrams}` IP datagrams arrived as a first fragment, and the rest of each datagram never arrived. sipnab could not reassemble them, so a SIP message larger than the path MTU is missing. The usual cause is a capture filter that tests ports: only the first fragment carries the ports, so the kernel drops the later fragments. The `{}` is the clause `(ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)`. The same count is `incomplete_ip_datagrams` in `capture_status` and the REST capture-quality block, and `sipnab_capture_incomplete_ip_datagrams_total` on `/metrics`.
+
+**What to do:** If you gave your own capture filter, append the clause to it, or capture without a filter so that sipnab generates one that passes fragments. If you set no filter, the capture point missed the fragments: capture closer to the traffic. See [Requests missing, replies present](troubleshooting.md#requests-missing-replies-present).
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message or TLS record behind each, and a message the hole cut is lost (packets the capture point missed)`
 
 Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it, or, in a build with the `tls` feature, at the next TLS record. A SIP message that a gap cuts through goes missing from the analysis.
@@ -45550,7 +45640,7 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,959 | 62,358 |
+| core | 9 | 12,959 | 62,752 |
 | signaling | 22 | 24,046 | 80,515 |
 | captures | 11 | 12,723 | 30,259 |
 | security | 6 | 10,046 | 10,046 |
@@ -45560,7 +45650,7 @@ resource.
 | server | 6 | 5,976 | 38,359 |
 | vcon | 7 | 10,806 | 34,674 |
 | tls | 3 | 2,903 | 5,009 |
-| full | 80 | 93,644 | 335,774 |
+| full | 80 | 93,644 | 336,168 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -46297,6 +46387,7 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "capture_quality": {
     "degraded": false,
     "ice_role_conflicts": 0,
+    "incomplete_ip_datagrams": 0,
     "interface_dropped_packets": 0,
     "invalid_timestamps": 0,
     "kernel_dropped_packets": 0,
@@ -52754,7 +52845,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 51 Prometheus metrics, and the listener that serves them is off by
+exports 52 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -65287,6 +65378,7 @@ Writing your own expression replaces the generated one whole.
   So the encapsulated arm goes away and `--capture-tunnels` turns inert.
 - Two warnings cover that:
   - one when a port-based expression shows no sign of handling encapsulation,
+    or passes no later IP fragment (it then gives the filter to use),
   - one naming `--capture-tunnels` as ignored when you passed it
     alongside a filter of your own.
 
@@ -65331,6 +65423,36 @@ Two limits:
 
 [Encapsulation decoding](internals/encapsulation-decoding.md#how-the-generated-filter-reaches-encapsulated-sip)
 records the byte offsets the filter probes and why.
+
+### The generated filter passes IP fragments
+
+A SIP message larger than the path MTU travels as IP fragments, and only the
+first fragment carries the ports. A port test cannot match the others, so the
+generated filter carries a fragment arm beside its port tests:
+
+- IPv4: every fragment, the first included (`ip[6:2] & 0x3fff != 0`).
+- IPv6: a Fragment header directly behind the IPv6 header, or behind one
+  Hop-by-Hop, Routing or Destination Options header.
+- Only fragments of UDP, TCP and ESP, the protocols sipnab reads after
+  reassembly. Fragments of ICMP, GRE and SCTP stay in the kernel.
+- The same test sits in every encapsulated arm: VLAN, QinQ, PPPoE and MPLS.
+
+The arm passes the fragments of every UDP datagram, because a later fragment
+names no port. sipnab reassembles each datagram and discards the ones that
+carry no SIP.
+
+Limits:
+
+- Inside an encapsulation, the arm matches an IPv6 Fragment header only
+  directly behind the IPv6 header. Behind two or more extension headers no arm
+  matches it: classic BPF has no loop to walk the chain.
+- On a run that combines `--hep-listen` with `-d`, the interface filter passes
+  media only and no SIP fragments, because the HEP sender delivers the
+  signaling.
+
+sipnab counts a datagram whose first fragment arrived and whose later
+fragments did not as `incomplete_ip_datagrams`. See
+[Requests missing, replies present](troubleshooting.md#requests-missing-replies-present).
 
 ## SIP over WebSocket, IP fragments and TCP segments
 
