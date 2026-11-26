@@ -1,0 +1,19 @@
+INVITE sip:desk@[2001:db8::42] SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1];branch=z9hG4bKv6-insdp46
+Max-Forwards: 70
+To: sip:desk@[2001:db8::42]
+From: sip:front@example.org;tag=v6t
+Contact: "Front" <sip:front@[2001:db8::a2]>
+Call-ID: insdp46.l1z2x3
+CSeq: 46 INVITE
+Content-Type: application/sdp
+Content-Length: 172
+
+v=0
+o=- 7100 7100 IN IP6 2001:db8::a2
+s=check
+c=IN IP6 2001:db8::a2
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

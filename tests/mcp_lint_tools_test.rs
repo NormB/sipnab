@@ -466,7 +466,12 @@ fn every_cataloged_rule_is_explainable() -> Result<(), TestError> {
     // OPUS-RTPMAP-RATE).
     // 41 -> 42: REQUEST-LINE-SPACING, message-scoped (RFC 4475 3.1.2.9 and
     // 3.1.2.10).
-    assert_eq!(ids.len(), 42, "the catalog size moved: {}", ids.len());
+    // 42 -> 53: eleven message-scoped RFC 4475 / RFC 5118 shape rules
+    // (IPV6-REFERENCE-UNBRACKETED, EMPTY-PARAMETER, CONTENT-LENGTH-INVALID,
+    // QUOTED-STRING-UNTERMINATED, three REQUEST-URI rules,
+    // ADDR-SPEC-WHITESPACE, DISPLAY-NAME-UNQUOTED, DATE-NOT-GMT,
+    // BRANCH-NO-IDENTIFIER).
+    assert_eq!(ids.len(), 53, "the catalog size moved: {}", ids.len());
 
     for id in ids {
         let payload =

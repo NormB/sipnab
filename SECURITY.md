@@ -4,14 +4,21 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Email **security@sipnab.com** with:
+Report it privately, by either of two channels:
+
+- Email **security@sipnab.com**. Use the subject line:
+  `[SECURITY] <brief description>`
+- Open a report through GitHub's private vulnerability reporting, at
+  <https://github.com/NormB/sipnab/security/advisories/new>. The report goes
+  to the maintainers, and GitHub adds you as a collaborator on its draft
+  advisory.
+
+Include in either one:
 
 - Description of the vulnerability
 - Steps to reproduce or proof of concept
 - Impact assessment (what an attacker could achieve)
 - Your name/handle for credit (optional)
-
-Use the subject line: `[SECURITY] <brief description>`
 
 The site publishes the same address at
 <https://sipnab.com/.well-known/security.txt>, in the form
@@ -152,6 +159,21 @@ and how the maintainer checks it.
 - The maintainer may dismiss an alert that is a false positive or does not
   apply.
 - Every dismissal records a reason in GitHub's code-scanning history.
+
+## Published advisories
+
+The project publishes each vulnerability it fixes as a security advisory of
+this repository, after the fixed release is out. GitHub lists them all at
+<https://github.com/NormB/sipnab/security/advisories>.
+
+- [GHSA-vjqw-738j-4chx](https://github.com/NormB/sipnab/security/advisories/GHSA-vjqw-738j-4chx),
+  published 2026-11-25: RSA-OAEP decryption of vCon containers, reachable
+  over the network, used a non-constant-time RSA implementation (the Marvin
+  attack, CVE-2023-49092). Affects 0.5.218 to 0.5.247; fixed in 0.5.248.
+
+Maintainers: when you publish an advisory, add its line to
+`.config/published-advisories.txt` and its entry here in the same change. A
+test in `tests/security_policy_doc_test.rs` fails while the two disagree.
 
 ## Accepted advisories in VEX form
 

@@ -23,12 +23,45 @@ otherwise the merge base of HEAD and origin/main, or `--base`.
 2. Each `###` heading is in [Unreleased] once, and each entry once.
 3. A blank line comes before `## [Unreleased]`, before each `###` heading of
    it and before the first released heading.
-4. The base's released part (from the first `## [x.y.z]` heading to the end)
-   is the end of ours, byte for byte. A release commit adds a section on top
-   and passes. A commit that rewrites released sections on purpose writes
-   the sha256 of the released part it leaves to
-   `.config/changelog-released.sha256`: the rule passes when the pin of the
-   index is that sha256 and is not the base's pin.
+4. The released part (from the first `## [x.y.z]` heading to the end) of
+   every commit the result is built on is the end of ours, byte for byte:
+   the base, HEAD (the first parent, or the commit a rebase or a
+   cherry-pick replays onto) and the merge base of HEAD and origin/main. A
+   release commit adds a section on top and passes. A commit that rewrites
+   released sections on purpose writes the sha256 of the released part it
+   leaves to `.config/changelog-released.sha256`: the rule passes against a
+   commit when the pin of the index is that sha256 and is not that commit's
+   pin. A commit whose pin is older than the pin of the index does not judge
+   either: the commit with the newest pin does. That is the case when another
+   of the commits holds the pin of the index, its released part is the end of
+   ours, and its history holds the older pin. With `--base`, that commit
+   alone is compared.
+
+   Why the newest pin judges: on 2026-11-25 main d023f4815 rewrote the
+   released sections 0.5.214 to 0.5.190 as outlines and moved the pin, and
+   0.5.273 then added a section on top. A branch forked before d023f4815
+   holds the old text, so its HEAD and its merge base refused every merge of
+   main, and a car forked before it refused its merge into a train; only a
+   hand edit of the pin passed. The pin file's history is a chain: a rewrite
+   on purpose writes a new sha256, every later commit keeps it until the
+   next rewrite, and no commit moves it back. So a history that holds a pin
+   has moved past it, and an older pin is replaced, not contradicted. An
+   [Unreleased] entry moved into a released section is still refused: the
+   commit with the newest pin judges the result, and its released part is
+   not the end of ours. Two rewrites made apart from one pin do not excuse
+   each other (neither history holds the other's pin): their merge writes a
+   pin of its own.
+
+   Why every commit and not the base alone: on 2026-11-25 a merge train
+   merged a car branch forked before the 0.5.272 release (MERGE_HEAD) into a
+   train that held it, and the merge put the car's [Unreleased] entries
+   inside the released [0.5.272] section. The car's released part, 0.5.271
+   and older, is the end of any newer one, so the gate passed four such
+   merges. HEAD held 0.5.272 and refuses them. Neither origin/main's tip nor
+   the newest tag is the rule: a branch forked before a release does not
+   hold it and would fail against either for no fault of its own, and a tag
+   may not be fetched. A commit never changes what was released before it,
+   so each commit it is built on judges its own released part.
 
 The format of an entry is not judged here: that is the subject of the
 changelog's format gate.
@@ -50,11 +83,16 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FILE = "CHANGELOG.md"
 PIN = ".config/changelog-released.sha256"
 UNRELEASED = "## [Unreleased]"
 RELEASE_HEADING = re.compile(r"## \[[0-9]")
+HEADING = re.compile(r"#{1,6} ")
 # How many differing lines of a released part a message shows.
 SHOWN = 6
 # How much of each of those lines: an entry from before the outline format
@@ -105,36 +143,79 @@ def where(heading: str) -> str:
 
 
 def blank_line_problems(text: str) -> list[str]:
+    """Every Markdown heading below the first line, outside a code fence, has a blank line above it.
+
+    2026-11-25: this read only [Unreleased], its `###` headings and the first
+    released heading, and main held 14 joined headings further down.
+    """
     lines = [line.rstrip("\r\n") for line in text.splitlines()]
-    first = next((i for i, line in enumerate(lines) if RELEASE_HEADING.match(line)), len(lines))
-    start = next((i for i, line in enumerate(lines[:first]) if line.rstrip() == UNRELEASED), None)
-    wanted = [] if start is None else [start] + [i for i in range(start + 1, first) if lines[i].startswith("### ")]
-    if first < len(lines):
-        wanted.append(first)
+    code = fence_mask(text)
+    wanted = [i for i, line in enumerate(lines) if not code[i] and HEADING.match(line)]
     return [f"no blank line before the heading '{lines[i].rstrip()}' (line {i + 1}): a merge joined it to the "
             "line above; put one empty line between them."
             for i in wanted if i > 0 and lines[i - 1].strip()]
 
 
-def released_problem(ours: str, base: str, pin: str, base_pin: str) -> list[str]:
-    if ours.endswith(base):
-        return []
+Released = collections.namedtuple("Released", "label released pin history")
+Released.__doc__ = """A commit the result is built on: the label a problem is
+prefixed with (None for the base), its released part (None without a
+CHANGELOG), its pin, and every pin its history held (its own included; an
+empty string for the commits before the pin file)."""
+
+
+def released_problems(ours: str, pin: str, commits) -> list[str]:
+    """Rule 4: the problems of our released part `ours`, under the pin `pin`
+    of the index, against each of `commits` (Released).
+
+    A commit's released part judges ours unless one of these holds:
+    - it is the end of ours;
+    - this commit rewrites on purpose: the pin is the sha256 of ours and is
+      not that commit's pin;
+    - its pin is older than the pin of the index: another of the commits
+      holds the pin of the index, its released part is the end of ours, and
+      its history holds this commit's pin. A rewrite on purpose moves the pin
+      and no later commit moves it back, so a history that holds a pin has
+      moved past it, and the commit with the newest pin judges the result."""
     digest = hashlib.sha256(ours.encode("utf-8")).hexdigest()
-    if pin == digest and pin != base_pin:
-        return []
+    judges = [c for c in commits if c.released is not None and ours.endswith(c.released)]
+    problems = []
+    for c in commits:
+        if c.released is None or ours.endswith(c.released):
+            continue
+        if pin == digest and pin != c.pin:
+            continue
+        if pin != c.pin and any(d.pin == pin and c.pin in d.history for d in judges):
+            continue
+        newer = [d for d in judges if d.pin != pin and pin in d.history]
+        problem = released_problem(ours, c.released, digest, newer[0] if newer else None)
+        problems.append(problem if c.label is None else f"against {c.label}: {problem}")
+    return problems
+
+
+def released_problem(ours: str, base: str, digest: str, newer=None) -> str:
+    """The message for a released part `ours` that `base` does not judge.
+    `newer` is a commit whose pin is newer than the pin of the index."""
     mine, theirs = collections.Counter(ours.splitlines()), collections.Counter(base.splitlines())
     added = [line[:WIDTH] for line in (mine - theirs) if line.strip()][:SHOWN]
     gone = [line[:WIDTH] for line in (theirs - mine) if line.strip()][:SHOWN]
-    return ["the released part (from the first `## [x.y.z]` heading to the end) is not the base's. Lines here "
+    take = "" if newer is None else (
+        f" Or the pin of the index is older than the pin {newer.pin} of {newer.label or 'the base'}, which "
+        f"rewrote released sections on purpose: write {newer.pin} to {PIN}, as that commit has it.")
+    return ("the released part (from the first `## [x.y.z]` heading to the end) is not the base's. Lines here "
             f"that the base's released part does not hold (at most {SHOWN}, the first {WIDTH} characters of "
             f"each): {added}. Lines of the base's that are not here: {gone}. Either a merge moved an entry into a released "
             "section: move it back to [Unreleased], under its heading, until the released part is the base's "
-            "byte for byte. Or you rewrote released sections on purpose: write "
-            f"{digest} to {PIN} in the same commit."]
+            f"byte for byte.{take} Or you rewrote released sections on purpose: write "
+            f"{digest} to {PIN} in the same commit.")
 
 
-def check(ours: str, base: str, pin: str = "", base_pin: str = "") -> list[str]:
-    """The problems of `ours` against `base`, both whole CHANGELOG texts."""
+def check(ours: str, base: str, pin: str = "", base_pin: str = "", others=(), base_history=()) -> list[str]:
+    """The problems of `ours` against `base`, both whole CHANGELOG texts.
+
+    `others` holds (label, CHANGELOG text or None, pin[, pin history]) of the
+    other commits the result is built on: rule 4 alone applies to them. A
+    commit without a CHANGELOG has released nothing; a commit given without
+    a pin history is judged as if its history held its own pin alone."""
     problems = []
     our_unreleased, our_released = split(ours)
     base_unreleased, base_released = split(base)
@@ -157,8 +238,11 @@ def check(ours: str, base: str, pin: str = "", base_pin: str = "") -> list[str]:
             problems.append(f"the entry {entry.lead!r} is {where(headings[0])} here and {where(entry.heading)} on "
                             f"the base: move it (its lead line and its sub-bullets) {where(entry.heading)}.")
     problems += blank_line_problems(ours)
-    problems += released_problem(our_released, base_released, pin, base_pin)
-    return problems
+    commits = [Released(None, base_released, base_pin, frozenset(base_history) | {base_pin})]
+    for label, text, other_pin, *history in others:
+        commits.append(Released(label, None if text is None else split(text)[1], other_pin,
+                                frozenset(*history) | {other_pin}))
+    return problems + released_problems(our_released, pin, commits)
 
 
 def pin_of(text) -> str:
@@ -180,15 +264,52 @@ def git(repo, *args):
     return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
 
 
-def find_base(repo) -> tuple[str | None, str]:
-    """(the base commit, how it was chosen)."""
-    merging = git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}")
-    if merging:
-        return merging.strip(), "MERGE_HEAD, the commit being merged"
-    base = git(repo, "merge-base", "HEAD", "origin/main")
-    if base:
-        return base.strip(), "the merge base of HEAD and origin/main"
-    return None, "no merge base of HEAD and origin/main: fetch origin/main, or pass --base"
+MERGING = "MERGE_HEAD, the commit being merged"
+MAIN_BASE = "the merge base of HEAD and origin/main"
+ON_TOP_OF = "HEAD, the commit this one is built on"
+
+
+def choose_bases(explicit: str, merge_head: str, head: str, main_base: str):
+    """(the base, how it was chosen, [(commit, how)] whose released part ours
+    must end with), from the commits git names; an empty string is a commit
+    that does not exist. The base is None when there is none."""
+    if explicit:
+        return explicit, "--base", [(explicit, "--base")]
+    base, how = (merge_head, MERGING) if merge_head else (main_base, MAIN_BASE)
+    if not base:
+        return None, "no merge base of HEAD and origin/main: fetch origin/main, or pass --base", []
+    released = []
+    for commit, why in ((base, how), (head, ON_TOP_OF), (main_base, MAIN_BASE)):
+        if commit and commit not in (c for c, _ in released):
+            released.append((commit, why))
+    return base, how, released
+
+
+def pin_history(repo, commit) -> frozenset:
+    """Every pin `commit`'s history held: the pin of each commit in it that
+    changed the pin file and of that commit's parents (so a history from
+    before the pin file holds the empty pin). Empty when `commit` does not
+    exist. Side branches count (--full-history): a merge that took a side
+    branch moved past its pins as well."""
+    log = git(repo, "log", "--full-history", "--format=%H %P", commit, "--", PIN)
+    if log is None:
+        return frozenset()
+    commits = {c for line in log.splitlines() for c in line.split()} | {commit}
+    return frozenset(pin_of(git(repo, "show", f"{c}:{PIN}")) for c in commits)
+
+
+def commit_of(repo, rev) -> str:
+    """The full name of `rev`, or an empty string when it does not exist."""
+    return (git(repo, "rev-parse", "-q", "--verify", f"{rev}^{{commit}}") or "").strip()
+
+
+def find_bases(repo, explicit: str = ""):
+    """choose_bases() for the repository's MERGE_HEAD, HEAD and merge base of
+    HEAD and origin/main."""
+    if explicit:
+        return choose_bases(explicit, "", "", "")
+    return choose_bases("", commit_of(repo, "MERGE_HEAD"), commit_of(repo, "HEAD"),
+                        (git(repo, "merge-base", "HEAD", "origin/main") or "").strip())
 
 
 def main(argv=None) -> int:
@@ -199,7 +320,7 @@ def main(argv=None) -> int:
         args = p.parse_args(argv)
     except SystemExit:
         return 2
-    base, how = (args.base, "--base") if args.base else find_base(args.repo)
+    base, how, released = find_bases(args.repo, args.base)
     if not base:
         print(f"check-changelog-merge: {how}", file=sys.stderr)
         return 2
@@ -209,13 +330,18 @@ def main(argv=None) -> int:
         which = "the index" if ours is None else base
         print(f"check-changelog-merge: {FILE} could not be read from {which}", file=sys.stderr)
         return 2
-    problems = check(ours, theirs, pin_of(git(args.repo, "show", f":{PIN}")), pin_of(git(args.repo, "show", f"{base}:{PIN}")))
+    others = [(f"{commit[:12]} ({why})", git(args.repo, "show", f"{commit}:{FILE}"),
+               pin_of(git(args.repo, "show", f"{commit}:{PIN}")), pin_history(args.repo, commit))
+              for commit, why in released if commit != base]
+    problems = check(ours, theirs, pin_of(git(args.repo, "show", f":{PIN}")),
+                     pin_of(git(args.repo, "show", f"{base}:{PIN}")), others, pin_history(args.repo, base))
     if problems:
         print(f"check-changelog-merge: {FILE} of the index against {base[:12]} ({how}):", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"check-changelog-merge: the CHANGELOG is as the base {base[:12]} has it ({how})")
+    also = "".join(f"; its released part was compared with the one of {other[0]}" for other in others)
+    print(f"check-changelog-merge: the CHANGELOG is as the base {base[:12]} has it ({how}){also}")
     return 0
 
 

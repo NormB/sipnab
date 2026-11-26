@@ -1068,7 +1068,9 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 693 -> 694 (MEM-2, bounded TLS key material): +1 in src/app/batch.rs, the
 // line `tls_bound_guidance` prints when a bound dropped key log entries,
 // ServerHello messages or sessions.
-const EXPECTED_TEMPLATES: usize = 694;
+// 694 -> 695 (FILE-2 d): +1 in src/app/batch.rs, the line the first failed
+// write to standard output prints while the run goes on.
+const EXPECTED_TEMPLATES: usize = 695;
 
 // ---------------------------------------------------------------------------
 // The page gates

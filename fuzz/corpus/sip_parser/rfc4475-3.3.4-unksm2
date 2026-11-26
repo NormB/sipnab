@@ -1,0 +1,10 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.144:5060;branch=z9hG4bKuk44
+Max-Forwards: 70
+To: urn:example:token-44
+From: <https://www.example.org/>;tag=uk44
+Call-ID: unksm2.i4o5p6@reg.example.org
+CSeq: 44 REGISTER
+Contact: <label:Front_Desk>
+l: 0
+

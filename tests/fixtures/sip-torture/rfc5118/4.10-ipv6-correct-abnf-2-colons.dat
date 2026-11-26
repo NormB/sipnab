@@ -1,0 +1,9 @@
+OPTIONS sip:desk@[2001:db8::192.0.2.60] SIP/2.0
+Via: SIP/2.0/UDP lab.example.org;branch=z9hG4bKv6-two410
+Max-Forwards: 70
+To: sip:desk@[2001:db8::192.0.2.60]
+From: sip:front@example.org;tag=v6t
+Call-ID: two410.i7o8p9
+CSeq: 410 OPTIONS
+Content-Length: 0
+

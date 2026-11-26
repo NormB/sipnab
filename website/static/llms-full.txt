@@ -15437,9 +15437,11 @@ sudo rm -rf /etc/sipnab
 
 ## Report a security problem
 
-Send a vulnerability report by email to `security@sipnab.com`, never as a
-public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
-says what to include and how long each stage takes.
+Send a vulnerability report by email to `security@sipnab.com`, or through
+GitHub's [private vulnerability reporting](https://github.com/NormB/sipnab/security/advisories/new),
+never as a public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
+says what to include, how long each stage takes, and which advisories the
+project has published.
 
 Scanners and researchers can read the same address from the site's
 [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html) file. You need an
@@ -18142,6 +18144,8 @@ anything extra.
   - By default reports land in `~/.local/state/sipnab/`, and in
     `/var/lib/sipnab/` under the packaged systemd unit.
   - Each name has the form `sipnab-crash-<date>-<time>-<pid>-<n>.log`.
+  - sipnab keeps the newest 20 reports and removes older ones; see
+    [How many crash reports sipnab keeps](run-as-a-service.md#how-many-crash-reports-sipnab-keeps).
   - A `report_dir` in the
     [`[crash]` config section](config-reference.md#crash) moves them.
   - If you closed the terminal, list the newest one:
@@ -21604,6 +21608,18 @@ sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --aut
 - Verify: the run ends by itself, and `ls -l /var/captures` shows `sip.pcapng` and `sip_00001.pcapng` to `sip_00003.pcapng`, about 200 MiB together.
 - Troubleshoot: before 0.5.264, `--autostop filesize` read only the size of the open file, which each rotation starts again, so with a `--split` smaller than the limit the run never stopped. Upgrade, or stop that run with `--duration` or Ctrl-C.
 
+Stop the capture while 2 GiB are still free under `/var/captures`. The run closes its files and exits `4`:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --min-free-disk 2G
+```
+
+Turn the free-disk check off, the 1 GiB warning included, for a run on a disk that always has less than 1 GiB free:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --min-free-disk 0
+```
+
 **The drop user creates the output files.** Run as root, sipnab does this:
 
 - It opens the capture device.
@@ -21696,6 +21712,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
+| `--min-free-disk` | `<SIZE>` | warn under 1 GiB | Unreleased | Stop the capture when the free disk space under an output falls below SIZE, such as `2G` or `500M` (binary units: `1G` is 1024 MiB; sipnab refuses a bare number other than `0`, and `MB`/`GB`). sipnab reads the free space of the directory of `-O` (every `--split` file sits beside it), `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and each vCon rule before the capture opens and every 5 seconds. Below SIZE before the capture opens, the run does not start; below it later, the run stops as `SIGTERM` stops it. Either way it exits `4`. Without the flag a directory under 1 GiB free gets one warning and the run goes on; `0` turns the check and the warning off. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | 0.3.0 | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | 0.3.0 | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Unlike `sngrep` and `sipgrep`, sipnab takes no match expression here; match SIP text with `-e`. A filter typed here that does not compile says so, and sipnab refuses a lone argument that names an existing file, naming the `-I` it was missing. Config: `[capture] bpf_filter` |
@@ -24694,6 +24711,7 @@ Scripts can rely on these:
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code. A relay question the run cannot ask also exits `2` before the run reads anything: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` or `--relay-compare` with no `--rtpengine-control`, on a run that reads a capture file, or naming an address that is not `IP:port` |
 | `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
 | `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
+| `4` | Stopped for disk space: the free space under an output fell below `--min-free-disk`. The last stderr line names the directory, its free bytes and the floor. Below the floor before the capture opened, the run did not start. A run that would have exited non-zero for its own reason keeps that code. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away. sipnab stops as it does for `SIGTERM`, which exits `0` like `SIGINT`, and exits `129` instead, so a supervisor that restarts on failure restarts it. A run that would have exited non-zero keeps that code |
 | `130` | Interrupted — Ctrl-C typed at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits. A stop signal at the prompt is a stop like any other: `0`, or `129` after `SIGHUP` |
 
@@ -24836,6 +24854,7 @@ each one covers in full.
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
+| `4` | Free disk space under an output fell below `--min-free-disk`. The last stderr line starts `sipnab stopped: free disk space under` and names the directory, its free bytes and the floor. Free space there, or lower the floor. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
@@ -27443,6 +27462,18 @@ Writing the per-message output to standard output failed, for a reason other tha
 **What to do:** Check that the destination of standard output has space and accepts writes. The destination is a file or disk you redirected it to.
 
 **Exit code:** 1.
+
+### `Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits 1.`
+
+The first write of the per-message output to standard output failed, for a reason other than a closed pipe. sipnab prints this line when the write fails, once per run, so a live capture shows it while it runs. The `Failed to write output: {e}` line repeats the error at the end of the run.
+
+- `{e}` is the error, for example `No space left on device (os error 28)`.
+- The run goes on: `-O`, the vCon files and the reports are still written.
+- sipnab does not count a closed pipe, such as `| head`, as an error.
+
+**What to do:** Free space on, or fix write access to, the file or disk standard output goes to. To keep the output, stop the run and start it again with standard output somewhere that has space.
+
+**Exit code:** 1, at the end of the run.
 
 ### `Failed to write packet: {}`
 
@@ -35820,6 +35851,51 @@ whatever its first bytes:
 `schema_version` increments on breaking field changes. Pin your consumers to
 it.
 
+### Notice when sipnab cannot write the NDJSON file
+
+A run such as `sipnab -N -d any --json > sip.ndjson` writes its lines to
+standard output. When that file's disk fills, the writes fail. sipnab prints
+one line on standard error at the first failed write, while the run goes on,
+and exits 1 at the end. The `-O` file, the vCon files and the reports are
+still written. A closed pipe, such as `| head`, is not counted as a failure.
+
+Prerequisites: a sipnab binary newer than 0.5.272. Nothing changes on other
+systems.
+
+Steps:
+
+1. Send standard error where you read it: the terminal, the journal under a
+   systemd unit, or a file with `2> sipnab.err`.
+2. Watch for a line that starts with `Writing standard output failed:`.
+3. When it appears, free space where standard output goes, then stop and
+   restart the run: sipnab loses the lines it writes after the failure.
+
+Verify: Linux has `/dev/full`, a device on which every write fails with "no
+space left". Send the output there:
+
+```bash
+# Run all of these, in order.
+sipnab -N --json -I tests/fixtures/sip_call.pcap > /dev/full
+echo $?
+```
+
+```text
+Writing standard output failed: No space left on device (os error 28). The run continues; its per-message output is incomplete, and it exits 1.
+Failed to write output: No space left on device (os error 28)
+1
+```
+
+Troubleshoot:
+
+- **The line appears only at the end of a short run.** sipnab buffers up to
+  64 KiB of output before it writes, so a short run's only write is at the end.
+  Pass `--line-buffer` to write each message as sipnab makes it.
+- **No line, but the file is short.** Standard output went to a pipe whose
+  reader stopped. sipnab does not count that as a failure.
+- **No line and exit 0 with standard output opened read-only.** The write
+  fails with "bad file descriptor", and Rust's standard library reports that
+  error on standard output as a successful write, so sipnab never sees it.
+
 ### Pretty-printed JSON (`--json-pretty`)
 
 `--json-pretty` emits the identical message record. It indents the record
@@ -38210,7 +38286,7 @@ What happens when sipnab panics. The panic hook:
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `$STATE_DIRECTORY` (the first entry), else `~/.local/state/sipnab` | Directory crash reports land in. systemd sets `$STATE_DIRECTORY` for a unit with `StateDirectory=`, so under the packaged unit the default is `/var/lib/sipnab`. sipnab writes one file per crash, named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). An empty string fails validation and names the key |
+| `report_dir` | string | `$STATE_DIRECTORY` (the first entry), else `~/.local/state/sipnab` | Directory crash reports land in. systemd sets `$STATE_DIRECTORY` for a unit with `StateDirectory=`, so under the packaged unit the default is `/var/lib/sipnab`. sipnab writes one file per crash, named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). After each report it removes its own older reports so the newest 20 remain. An empty string fails validation and names the key |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml
@@ -49371,7 +49447,7 @@ it to [`show_evidence`](mcp-tools-captures.md#show_evidence) to read the bytes b
 `suppressions` names the `.sipnablint` file that took part, both of them exactly
 as [`lint_dialog`](#lint_dialog) reports them.
 
-Nineteen of the forty-two rules skip on a one-message run, and
+Nineteen of the fifty-three rules skip on a one-message run, and
 `rules_not_evaluated` names them. Run `lint_dialog` first, and use this tool to
 confirm one message.
 
@@ -49380,14 +49456,14 @@ confirm one message.
 Returns the catalog entry for a rule identifier taken from a finding, a CI log
 or a suppression file.
 
-**Parameters:** `rule_id` (string, required) — one of the 42 catalog
+**Parameters:** `rule_id` (string, required) — one of the 53 catalog
 identifiers, matched exactly, such as `OBS-3264-6.1-PT-UNDECLARED`. No optional
 parameters, and the tool reads no capture, so it answers the same on any
 server. An unknown identifier fails with `invalid_params` (-32602) **listing all
-42**, so a call with any unknown identifier lists the catalog:
+53**, so a call with any unknown identifier lists the catalog:
 
 ```text
-'NOPE' is not a rule in the catalog. The 42 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-7.1-REQUEST-LINE-SPACING, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
+'NOPE' is not a rule in the catalog. The 53 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-7.1-REQUEST-LINE-SPACING, SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED, SIP-3261-25.1-EMPTY-PARAMETER, SIP-3261-20.14-CONTENT-LENGTH-INVALID, SIP-3261-25.1-QUOTED-STRING-UNTERMINATED, SIP-3261-25.1-REQUEST-URI-BRACKETED, SIP-3261-25.1-REQUEST-URI-WHITESPACE, SIP-3261-19.1.1-REQUEST-URI-HEADERS, SIP-3261-25.1-ADDR-SPEC-WHITESPACE, SIP-3261-25.1-DISPLAY-NAME-UNQUOTED, SIP-3261-20.17-DATE-NOT-GMT, SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
 ```
 
 ```jsonc
@@ -56433,6 +56509,17 @@ These read one message on its own.
 | `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. | Start requests at `Max-Forwards: 70`. |
 | `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. | Generate branches that start with `z9hG4bK`. |
 | `SIP-3261-7.1-REQUEST-LINE-SPACING` | warning | must | [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) | A request line has whitespace before the method or after `SIP/2.0`, more than one space between elements, or a tab. sipnab still reads the request. | Send `Method SP Request-URI SP SIP/2.0` with one space between elements. |
+| `SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An IPv6 address is the host of the Request-URI, of a `To`, `From`, `Contact`, `Reply-To`, `Route` or `Record-Route` URI, or a `Via` sent-by, without `[` and `]`. A `received` parameter takes the bare form and is not reported. | Write the host as `[2001:db8::10]`, with any port after the `]`. |
+| `SIP-3261-25.1-EMPTY-PARAMETER` | warning | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A `Via`, `To`, `From`, `Contact`, `Reply-To`, `Route` or `Record-Route` field holds `;;`, a trailing `;`, or an empty element between commas. | Remove the extra separators. |
+| `SIP-3261-20.14-CONTENT-LENGTH-INVALID` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14) | `Content-Length` is negative, empty or not a decimal number. | Send the body length in octets as a decimal number. |
+| `SIP-3261-25.1-QUOTED-STRING-UNTERMINATED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An address field opens a quoted display name and never closes it. | Close the display name with `"`. |
+| `SIP-3261-25.1-REQUEST-URI-BRACKETED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | The Request-URI sits inside `<` and `>`. | Send the Request-URI without angle brackets. |
+| `SIP-3261-25.1-REQUEST-URI-WHITESPACE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | The Request-URI holds a space or a tab. | Remove the whitespace from the URI. |
+| `SIP-3261-19.1.1-REQUEST-URI-HEADERS` | warning | must | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.1) | A `sip` or `sips` Request-URI carries a `?` headers component after its host. | Remove the headers component before sending the request. |
+| `SIP-3261-25.1-ADDR-SPEC-WHITESPACE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An address field has whitespace between its `<` and `>`. | Write `<sip:user@example.com>` with nothing between the brackets but the URI. |
+| `SIP-3261-25.1-DISPLAY-NAME-UNQUOTED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An unquoted display name holds a character that is not a token character, such as a comma. | Put the display name in double quotes. |
+| `SIP-3261-20.17-DATE-NOT-GMT` | info | must | [RFC 3261 section 20.17](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.17) | The `Date` field does not end in `GMT`. The rule also reports `UT`, `UTC` and every other zone. | Send the date in GMT. |
+| `SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER` | info | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch is `z9hG4bK` with nothing after it. | Append a unique transaction identifier to the cookie. |
 | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5) | The `CSeq` method disagrees with the request line. | Make the `CSeq` method match the request method. |
 | `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. | Add a `Contact` to the 2xx. |
 | `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. | Add `RSeq` to every reliable provisional response. |
@@ -68387,6 +68474,7 @@ unit.
   LimitNOFILE=65535
   Restart=on-failure
   RestartSec=5
+  RestartPreventExitStatus=4
 
   [Install]
   WantedBy=multi-user.target
@@ -68642,6 +68730,75 @@ soon as sipnab starts. [Send us a crash
 report](troubleshooting.md#send-us-a-crash-report) says what the report holds
 and where to send it.
 
+### How many crash reports sipnab keeps
+
+A service that crashes and restarts writes one report per crash. Each time
+sipnab writes a report, it removes its own older reports from the report
+directory so that the newest 20 remain, the new one among them. The number is
+`MAX_CRASH_REPORTS` (20) in the source, and no setting changes it. The
+project chose 20, and a later release can change the number.
+
+What sipnab removes, and what it leaves:
+
+- It removes only regular files whose names have the exact form
+  `sipnab-crash-YYYYMMDD-HHMMSS-<pid>-<n>.log`, the names it writes.
+- It leaves every other file, every subdirectory and its contents, and any
+  symbolic link, even one with a report's name.
+- It keeps the newest by modification time. For reports with the same time,
+  it compares the date, time, number and pid in their names.
+- It never removes the report it just wrote, even when older reports carry a
+  later time.
+
+Prerequisites: a sipnab binary newer than 0.5.272. Nothing changes on other
+systems.
+
+Steps:
+
+1. Copy a report you want to keep longer out of the report directory, for
+   example into the issue you open for it.
+2. Nothing else: the bound applies with no configuration, under the packaged
+   unit and outside it.
+
+Verify: put 25 old reports into an empty directory, crash sipnab into it with
+`--panic-selftest`, and count what remains. This run used a temporary
+directory, shown here as `DIR`:
+
+```bash
+# Run all of these, in order.
+mkdir DIR/reports
+for i in $(seq -w 1 25); do
+  touch -d "2020-01-01 00:00:$i" DIR/reports/sipnab-crash-20200101-0000$i-100-0.log
+done
+printf '[crash]\nreport_dir = "DIR/reports"\n' > DIR/crash.toml
+sipnab -f DIR/crash.toml --panic-selftest
+ls DIR/reports | wc -l
+ls -t DIR/reports | tail -1
+```
+
+```text
+sipnab panicked at src/main.rs:387:9:
+panic-selftest: intentional panic to verify crash handling
+crash report written to DIR/reports/sipnab-crash-20261125-203707-2042329-0.log
+20
+sipnab-crash-20200101-000007-100-0.log
+```
+
+The `--panic-selftest` run exits 101. The 25 old reports and the new one made
+26. sipnab removed the six oldest, seconds 01 to 06, and kept the new report
+among the 20.
+
+Troubleshoot:
+
+- **More than 20 files remain.** The others do not have sipnab's report name
+  form, for example a compressed `.log.gz` copy, or they are not regular
+  files. sipnab does not remove them. Remove them yourself.
+- **sipnab removed a report before you read it.** The directory held 20 newer
+  ones. Copy a report elsewhere as soon as sipnab writes it.
+- **sipnab removed no report.** sipnab did not write the new report: look for
+  `failed to write crash report:` in the journal. sipnab prunes only after it
+  writes a report, and it refuses a report directory that is a symbolic link
+  or is world-writable without the sticky bit.
+
 ## Rotate the audit and provenance files
 
 Four flags append one JSON line per event to a file and never truncate it:
@@ -68726,6 +68883,90 @@ Troubleshoot:
   `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
 - **The new file has the wrong owner or mode.** `logrotate` made it from the
   `create` line; sipnab appends to that file and leaves its mode alone.
+
+## Stop a capture before the disk fills
+
+A capture that runs for days fills its disk one record at a time. When the
+disk is full, every output fails at once: `-O`, the vCon files and the audit
+trail. `--min-free-disk SIZE` stops the capture while there is still room, with
+its files closed, and exits 4.
+
+What sipnab watches: the directory of `-O` (every `--split` file sits beside
+it), of `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out`, and of
+each vCon rule. For a rule directory that does not exist yet, sipnab watches
+the nearest directory above it that does. sipnab reads the free space before
+the capture opens and then every 5 seconds, never per packet.
+
+- **Without the flag**, a directory under 1 GiB free gets one warning when it
+  crosses under, and the run goes on. The floor is `DEFAULT_WARN_FLOOR`
+  (1,073,741,824) bytes. A second warning comes only after the directory has
+  recovered to the floor plus a tenth.
+- **With `--min-free-disk SIZE`**, a directory under SIZE stops the run. Under
+  SIZE before the capture opens, the run does not start.
+- **With `--min-free-disk 0`**, sipnab reads nothing and prints no warning.
+
+Prerequisites:
+
+- A sipnab binary with `--min-free-disk` in `sipnab --help`.
+- On systemd, a unit with `RestartPreventExitStatus=4`. The packaged unit has
+  it, and so does the unit in [Write a unit of your own](#write-a-unit-of-your-own).
+  Without it, `Restart=on-failure` starts sipnab again after `RestartSec=`,
+  into the same full disk.
+
+Steps:
+
+1. Pick the floor: what the outputs need between the stop and someone freeing
+   space, plus what other programs on that file system need. Units are
+   binary: `2G` is 2048 MiB.
+2. Add the flag to `ExecStart=` with a drop-in
+   ([Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in)
+   shows how):
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog -O /var/lib/sipnab/sip.pcapng --pcapng --split filesize:100 --split-keep 48 --min-free-disk 2G
+   ```
+
+3. Reload and restart: `sudo systemctl daemon-reload` and then
+   `sudo systemctl restart sipnab`.
+
+Verify: give the run a floor no disk can meet, and check that it does not
+start. `16777215T` is the largest value the flag takes. This run read a
+capture file into a temporary directory, shown here as `DIR`:
+
+```bash
+sipnab -N -I capture.pcap -O DIR/out.pcap --min-free-disk 16777215T
+```
+
+```text
+WARN sipnab::disk_floor: stopping the capture: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB)
+sipnab stopped: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB); exit 4
+```
+
+`echo $?` right after it printed `4`. `DIR` holds no `out.pcap`: the capture
+never opened. The same command with
+`--min-free-disk 1G` read the file, wrote `out.pcap` and exited 0. The
+`sipnab stopped:` line goes to stderr even with `SIPNAB_LOG=off`.
+
+After a stop under systemd, `systemctl status sipnab` shows
+`status=4/NOPERMISSION` (systemd's name for status 4), and the service stays
+stopped.
+
+Troubleshoot:
+
+- **`invalid value '500' for '--min-free-disk <SIZE>'`.** A number needs a
+  unit: `500M`. sipnab refuses `MB` and `GB` because the units are binary; write
+  `M` or `MiB`.
+- **The service starts again after a disk stop.** The unit has no
+  `RestartPreventExitStatus=4`; add it in a drop-in.
+- **`cannot read the free disk space under DIR`.** sipnab could not open the
+  directory before the capture opened. That directory is not checked; the
+  others still are.
+- **A `--cores` run does not stop mid-read.** sipnab checks a multi-core file
+  read only before it starts, not every 5 seconds.
+- **The warning appears and nothing stops.** That is the 1 GiB default
+  warning. It stops nothing; pass `--min-free-disk SIZE` to stop.
 
 ## When the service does not start
 
@@ -83983,6 +84224,14 @@ project's license, as the DCO text says. The line stays in the history of
 personal mailbox. The `DCO` check refuses a sign-off that names any other
 address.
 
+No other trailer carries an email address. A commit carries an address only
+in its author and committer fields. The `commit-msg` hook and CI refuse a
+trailer that names any address except a GitHub noreply alias, a reserved one
+such as `example.com` included (class I in
+[Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network)).
+Name a co-author or a reviewer by name alone, or by the person's noreply
+alias.
+
 **Before you start.**
 
 - On GitHub, open Settings, then Emails. Turn on "Keep my email addresses
@@ -84180,9 +84429,10 @@ names any of these:
 - an address on its LAN,
 - a path under an account's home directory.
 
-It also refuses a message that credits an AI assistant as an author.
+It also refuses a message that credits an AI assistant as an author, an
+email address at a domain somebody owns, and an email address in a trailer.
 
-- These are classes A to E and H of
+- These are classes A to E and G to I of
   [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network).
 - The rules are the same predicates in `tests/private_identity_test.rs`, run
   through `scripts/check-message-identity.sh`.
@@ -84670,6 +84920,38 @@ Naming an MCP client is not attribution. These are all accepted:
 - Claude Desktop,
 - a `claude mcp add` command,
 - a model name in an MCP example.
+
+A commit carries an email address only in its author and committer fields,
+never in the message. The commit-msg hook, the pre-push hook and CI's
+pull-request check refuse:
+
+- an address in a trailer (class I), even a reserved one such as
+  `someone@example.com`. A trailer is a line that
+  `git interpret-trailers --parse` reads as one: a `Key: value` line in the
+  last paragraph, a folded line included. `Signed-off-by:`,
+  `Co-Authored-By:`, `Reported-by:` and `Cc:` are trailers.
+- an address at a domain somebody owns in the body (class G), the address
+  of the maintainer included.
+
+The checks accept:
+
+- a GitHub noreply alias, `ID+login` followed by `@users.noreply.github.com`,
+  in a trailer or the body. A DCO sign-off takes this form.
+- the GitHub support address that Dependabot signs its commits with.
+- a reserved address in the body: `alice@example.com`, or a `.test` or
+  `.invalid` name.
+- a trailer with a name and no address: `Reviewed-by: A Reviewer`.
+
+The rule is the same for every commit, by the maintainer or by a contributor,
+in the commit-msg hook, the pre-push hook and CI. The noreply alias a trailer
+may name is exactly the one the `DCO` check accepts: the test reads it from
+`_NOREPLY` in `scripts/check-dco.py`. Sign off with your GitHub noreply
+address, never another one.
+
+A commit the repository owner authored and committed needs no sign-off, so it
+needs no trailer that names an address. The commits on `main` from before
+2026-11-25 that carry an address in a sign-off stay. The checks read new
+messages only.
 
 The one file exempt from the tracked-file scan is
 `tests/no_commit_attribution_test.rs`, the gate over recent commit messages.
@@ -86523,6 +86805,8 @@ Other stores:
   and per-stream buffered bytes in [`reassembly.rs`](../../src/capture/reassembly.rs).
 - The packet processor remembers at most `MAX_RESYNCED_STREAMS` (1024) TCP directions
   that resumed behind a gap, between two reads by the TLS layer. The oldest goes first.
+- Heuristic RTP discovery tracks at most `MAX_CANDIDATES` (8192) source and destination
+  pairs. A new pair past that drops an arbitrary one, so spoofed pairs cannot grow it.
 
 An archive named with `-I` is attacker-shaped input of the same kind.
 Its walk in [`archive`](../../src/capture/archive/mod.rs) stops rather than evicts:
@@ -87759,6 +88043,101 @@ A second gate once demanded a freshly built bundle alongside any staged
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`.
   - The `fuzz` workspace check.
 
+## IETF SIP torture tests
+
+[RFC 4475](https://www.rfc-editor.org/rfc/rfc4475.html) holds 49 SIP messages
+and [RFC 5118](https://www.rfc-editor.org/rfc/rfc5118.html) 12 IPv6 messages,
+each with the handling the RFC expects. These tests check that sipnab agrees.
+
+### Purpose
+
+A message the RFC calls valid must parse with the right fields and raise no
+finding that calls it malformed. For a message the RFC calls invalid, sipnab
+must refuse it or report it with a named lint rule, never accept it in silence.
+
+### Run the tests
+
+```sh
+cargo test --features full --test sip_torture_conformance_test
+```
+
+[`tests/sip_torture_conformance_test.rs`](../../tests/sip_torture_conformance_test.rs)
+builds, for each RFC case, a minimal message that keeps the property under
+test. Every name, domain and address in it is a reserved example value, and
+each test names the RFC section it comes from.
+
+```sh
+cargo test --features full --test sip_torture_rfc_messages_test
+```
+
+[`tests/sip_torture_rfc_messages_test.rs`](../../tests/sip_torture_rfc_messages_test.rs)
+runs one complete message per RFC case, 61 in all, from
+[`tests/fixtures/sip-torture/`](../../tests/fixtures/sip-torture). The
+sipnab project wrote these messages: none copies RFC message text. Each one has
+the property its RFC section tests, and uses only values reserved for
+documentation, except the broadcast address 255.255.255.255 that RFC 4475
+section 3.3.10 tests. Their provenance file,
+[`PROVENANCE.txt`](../../tests/fixtures/sip-torture/PROVENANCE.txt), names
+for each file the RFC section it covers, the property it has and its SHA-256.
+The test checks those digests, checks that the files and the fuzz seeds made
+from them hold no other address, host or telephone number, and checks each
+message's lint findings, parse result and dialog. The same messages seed the
+`sip_parser` fuzz corpus, and their SDP bodies the `sdp_parser` corpus.
+
+The RFC messages themselves are not in the repository, because they carry
+names, domains and addresses that are not reserved.
+
+### What each verdict means
+
+| Verdict | RFC wording | What sipnab does |
+|---|---|---|
+| valid | "well-formed", "must accept" | Parses; no rule reports the shape the case tests. |
+| tolerated | "acceptable to reject", "may ignore" | Parses as a lenient element would, and a lint rule reports the defect. |
+| invalid | "should respond with a 400 Bad Request", "should simply drop it" | Refuses the message with a parse error, or parses it and a lint rule reports the defect. |
+
+### Coverage
+
+A local run put every message of both RFCs, byte for byte from the Appendix A
+archive of each, through the parser, the linter and the dialog store. All 61 get the
+verdict the RFC expects. The RFC 5118 archive ends its lines with LF, which
+[RFC 3261 section 7](https://www.rfc-editor.org/rfc/rfc3261.html#section-7) does not allow, so those 12 ran with CRLF line ends. A second local run, on 2026-11-25,
+gave each fixture in `tests/fixtures/sip-torture/` the verdict of its RFC
+message, and `sip_torture_rfc_messages_test` keeps those 61 verdicts as its
+expected values. For an
+invalid or tolerated message the table names the finding that answers the
+case, and such a message can raise others too. For a valid message it names every
+finding.
+
+| RFC section | Message | RFC verdict | sipnab |
+|---|---|---|---|
+| RFC 4475 3.1.1.1 to 3.1.1.13 | `wsinv` to `noreason` | valid | All 13 parse with their fields. `wsinv` and `longreq` also get the `SIP-3261-8.1.1.7-BRANCH-COOKIE` warning, since their top Via has no `z9hG4bK`, and `intmeth` and `esc01` the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for values above 70. `intmeth` (3.1.1.2) raised `SIP-3261-25.1-HEADER-CONTROL-BYTE` for escaped control bytes until that rule learned quoted-pairs. |
+| RFC 4475 3.1.2.1 | `badinv01` | invalid | `SIP-3261-25.1-EMPTY-PARAMETER` |
+| RFC 4475 3.1.2.2 | `clerr` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` |
+| RFC 4475 3.1.2.3 | `ncl` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-INVALID` |
+| RFC 4475 3.1.2.4, 3.1.2.5 | `scalar02`, `scalarlg` | invalid | `SIP-3261-20.16-CSEQ-MALFORMED` |
+| RFC 4475 3.1.2.6 | `quotbal` | invalid | `SIP-3261-25.1-QUOTED-STRING-UNTERMINATED` |
+| RFC 4475 3.1.2.7 | `ltgtruri` | tolerated | `SIP-3261-25.1-REQUEST-URI-BRACKETED` |
+| RFC 4475 3.1.2.8 | `lwsruri` | invalid | `SIP-3261-25.1-REQUEST-URI-WHITESPACE` |
+| RFC 4475 3.1.2.9, 3.1.2.10 | `lwsstart`, `trws` | tolerated | `SIP-3261-7.1-REQUEST-LINE-SPACING`. sipnab refused `trws` as not SIP until the parser learned to ignore trailing whitespace. |
+| RFC 4475 3.1.2.11 | `escruri` | tolerated | `SIP-3261-19.1.1-REQUEST-URI-HEADERS` |
+| RFC 4475 3.1.2.12 | `baddate` | tolerated | `SIP-3261-20.17-DATE-NOT-GMT` |
+| RFC 4475 3.1.2.13 | `regbadct` | invalid | `SIP-3261-20-URI-BRACKETS` |
+| RFC 4475 3.1.2.14 | `badaspec` | invalid | `SIP-3261-25.1-ADDR-SPEC-WHITESPACE` |
+| RFC 4475 3.1.2.15 | `baddn` | invalid | `SIP-3261-25.1-DISPLAY-NAME-UNQUOTED` |
+| RFC 4475 3.1.2.16 | `badvers` | invalid | Refused: not SIP/2.0. |
+| RFC 4475 3.1.2.17, 3.1.2.18 | `mismatch01`, `mismatch02` | invalid | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` |
+| RFC 4475 3.1.2.19 | `bigcode` | invalid | Refused: status code out of range. |
+| RFC 4475 3.2.1 | `badbranch` | tolerated | `SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER` |
+| RFC 4475 3.3.1 | `insuf` | invalid | `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING`; no dialog, since there is no Call-ID. |
+| RFC 4475 3.3.2 to 3.3.7 | `unkscm` to `regaut01` | valid | Parse with no finding. The responses the RFC names (416, 420, 415, 401) belong to the receiving element. |
+| RFC 4475 3.3.8, 3.3.9 | `multi01`, `mcl01` | invalid | `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` |
+| RFC 4475 3.3.10 to 3.3.15 | `bcast` to `sdp01` | valid | Parse. `zeromf` (3.3.11) raises the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for Max-Forwards 0. |
+| RFC 4475 3.4.1 | `inv2543` | valid ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html)) | Parses. Reports what RFC 3261 requires of the RFC 2543 form: `BRANCH-COOKIE`, `MAX-FORWARDS-MISSING`, `RECORD-ROUTE-NOT-LOOSE` and `URI-PARAM-DEMOTED`. |
+| RFC 5118 4.1, 4.3, 4.4, 4.5, 4.7, 4.8, 4.9 | IPv6 references, both `received` forms, IPv4-mapped | valid | Parse with no finding. 4.3 is well formed even though its port is inside the brackets. |
+| RFC 5118 4.2 | `ipv6-bad` | invalid | `SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED` |
+| RFC 5118 4.6 | `ipv6-in-sdp` | valid | Parses; `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH`, because the message in the RFC declares 268 octets for a 251-octet body. |
+| RFC 5118 4.10 | three-colon and two-colon references | tolerated, valid | Both parse with no finding. The archive copies lack the blank line that ends the headers, which the text implies. |
+
 ## Failure-path coverage
 
 The tests and audits behind the operator [fault model](../fault-model.md). That
@@ -88728,7 +89107,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 160 `unsafe` blocks are libc FFI.
+- Most of this crate's 161 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -89501,6 +89880,11 @@ gate every commit, from any worktree.
   on the commit message.
 - That script runs the private-identity rules of
   [`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over each line.
+- It also refuses an email address in a trailer (class I).
+  - The trailers are the lines `git interpret-trailers --parse --no-divider` reads as trailers.
+  - The test runs that command with no git configuration, outside any repository.
+  - A GitHub noreply alias and the GitHub support address Dependabot signs with name no person, so a trailer may carry them.
+  - The noreply rule is `_NOREPLY` in [`scripts/check-dco.py`](../../scripts/check-dco.py), read by the test, so the trailer rule and the `DCO` check accept the same addresses.
 - It skips with `NOT CHECKED` on a branch that does not carry the script.
 - [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes:
   - what it checks
@@ -91716,6 +92100,17 @@ The script holds four rules:
 - `[Unreleased]` holds each heading once and each entry once.
 - A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
 - The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+  The same holds for the released part of `HEAD` and of the merge base of `HEAD` and `origin/main`.
+  - Why: on 2026-11-25 a merge train merged a branch from before release 0.5.272 into a train that held it.
+    The merge put the branch's `[Unreleased]` entries inside the released `[0.5.272]` section.
+    The branch's released part ends at 0.5.271, so a comparison with the branch alone passed four such merges.
+  - `HEAD` is the first parent of a merge, or the commit that a rebase or a cherry-pick builds on.
+  - With `--base <ref>`, the script compares the released part with that commit only.
+  - A commit whose pin is older than the pin of the index is not compared: the commit with the newest pin is.
+    That applies when another of the commits holds the pin of the index, the released part ends with the released part of that other commit, and the history of that other commit holds the older pin.
+  - Why: on 2026-11-25 main d023f4815 rewrote the released sections 0.5.214 to 0.5.190 and moved the pin.
+    Each branch from before d023f4815 holds the old text, so its `HEAD` and its merge base refused every merge of main until someone edited the pin by hand.
+    A rewrite on purpose writes a new pin, and no later commit moves the pin back, so the newest pin decides.
 
 Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
 Exit 1 lists each problem with the first line of the entry and the two headings.
@@ -91729,6 +92124,11 @@ Troubleshooting:
   - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
     [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
     The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- A message that starts with `against <commit> (HEAD, the commit this one is built on)`: the merge moved entries into a release that `HEAD` holds.
+  Move them back under `[Unreleased]`, under their headings.
+- A message that says `the pin of the index is older than the pin <sha256>`: the merge kept the branch's pin.
+  Write the sha256 that the message names to
+  [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256), as the other commit has it.
 - The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks

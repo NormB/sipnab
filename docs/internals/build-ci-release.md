@@ -155,7 +155,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 160 `unsafe` blocks are libc FFI.
+- Most of this crate's 161 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -928,6 +928,11 @@ gate every commit, from any worktree.
   on the commit message.
 - That script runs the private-identity rules of
   [`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over each line.
+- It also refuses an email address in a trailer (class I).
+  - The trailers are the lines `git interpret-trailers --parse --no-divider` reads as trailers.
+  - The test runs that command with no git configuration, outside any repository.
+  - A GitHub noreply alias and the GitHub support address Dependabot signs with name no person, so a trailer may carry them.
+  - The noreply rule is `_NOREPLY` in [`scripts/check-dco.py`](../../scripts/check-dco.py), read by the test, so the trailer rule and the `DCO` check accept the same addresses.
 - It skips with `NOT CHECKED` on a branch that does not carry the script.
 - [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes:
   - what it checks
@@ -3143,6 +3148,17 @@ The script holds four rules:
 - `[Unreleased]` holds each heading once and each entry once.
 - A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
 - The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+  The same holds for the released part of `HEAD` and of the merge base of `HEAD` and `origin/main`.
+  - Why: on 2026-11-25 a merge train merged a branch from before release 0.5.272 into a train that held it.
+    The merge put the branch's `[Unreleased]` entries inside the released `[0.5.272]` section.
+    The branch's released part ends at 0.5.271, so a comparison with the branch alone passed four such merges.
+  - `HEAD` is the first parent of a merge, or the commit that a rebase or a cherry-pick builds on.
+  - With `--base <ref>`, the script compares the released part with that commit only.
+  - A commit whose pin is older than the pin of the index is not compared: the commit with the newest pin is.
+    That applies when another of the commits holds the pin of the index, the released part ends with the released part of that other commit, and the history of that other commit holds the older pin.
+  - Why: on 2026-11-25 main d023f4815 rewrote the released sections 0.5.214 to 0.5.190 and moved the pin.
+    Each branch from before d023f4815 holds the old text, so its `HEAD` and its merge base refused every merge of main until someone edited the pin by hand.
+    A rewrite on purpose writes a new pin, and no later commit moves the pin back, so the newest pin decides.
 
 Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
 Exit 1 lists each problem with the first line of the entry and the two headings.
@@ -3156,6 +3172,11 @@ Troubleshooting:
   - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
     [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
     The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- A message that starts with `against <commit> (HEAD, the commit this one is built on)`: the merge moved entries into a release that `HEAD` holds.
+  Move them back under `[Unreleased]`, under their headings.
+- A message that says `the pin of the index is older than the pin <sha256>`: the merge kept the branch's pin.
+  Write the sha256 that the message names to
+  [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256), as the other commit has it.
 - The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks

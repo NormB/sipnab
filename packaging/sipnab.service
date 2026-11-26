@@ -37,6 +37,9 @@ LimitMEMLOCK=infinity
 
 Restart=on-failure
 RestartSec=5
+# Exit 4: --min-free-disk stopped the capture. A restart would start into
+# the same full disk, so systemd leaves the service stopped.
+RestartPreventExitStatus=4
 
 [Install]
 WantedBy=multi-user.target

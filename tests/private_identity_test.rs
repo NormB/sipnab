@@ -27,6 +27,11 @@
 //! credits an AI assistant as an author. It shares this file because it shares
 //! the message check the commit-msg hook and CI run.
 //!
+//! Class I is a rule for commit messages only: no trailer names an email
+//! address, apart from GitHub's noreply alias and GitHub's service addresses,
+//! which name no person. A commit carries an address only in its author and
+//! committer fields.
+//!
 //! # Why each class gets controls and not just a scan
 //!
 //! A scan that finds nothing is indistinguishable from a scan that looks at
@@ -372,6 +377,127 @@ mod rule {
         !PUBLISHED_IDENTITIES.contains(&low.as_str()) && !reserved && REAL_TLDS.contains(&tld)
     }
 
+    /// G and I. An email address as a commit message can carry one.
+    ///
+    /// Wider than G1's pattern over the tracked files in one way: the local
+    /// part may hold `[` and `]`, as a GitHub bot's alias does
+    /// (`49699333+dependabot[bot]@users.noreply.github.com`). G1's pattern
+    /// cannot start a match at `]@`, so it would also pass `x]@real-company.com`.
+    /// The domain ends in a label of letters, so a version pin such as
+    /// `serde@1.0.200` is not an address.
+    pub const MESSAGE_ADDRESS: &str =
+        r#"[^\s<>()"',;:@]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"#;
+
+    /// G and I. The script that holds GitHub's noreply rule, `_NOREPLY`.
+    pub const DCO_SCRIPT: &str = "scripts/check-dco.py";
+
+    /// G and I. The `_NOREPLY` pattern of `source`, the text of
+    /// [`DCO_SCRIPT`], anchored and without case, as a Rust pattern.
+    ///
+    /// The definition is read only in the form the script writes it: the
+    /// `_NOREPLY = re.compile(` line, the raw string alone on the next line,
+    /// then `re.IGNORECASE,`. Any other form gives `None`, and with no rule no
+    /// address is an alias, so a noreply sign-off is refused and the tests
+    /// that pass one fail by name (i_e28).
+    pub fn dco_noreply_pattern(source: &str) -> Option<String> {
+        let mut lines = source
+            .lines()
+            .map(str::trim)
+            .skip_while(|l| *l != "_NOREPLY = re.compile(");
+        lines.next()?;
+        let raw = lines.next()?.strip_prefix("r\"")?.strip_suffix("\",")?;
+        (lines.next()? == "re.IGNORECASE,").then(|| format!("(?i)^(?:{raw})$"))
+    }
+
+    /// G and I. The noreply rule, read from [`DCO_SCRIPT`]; `None` when it
+    /// cannot be read or does not compile.
+    pub fn noreply() -> Option<&'static regex::Regex> {
+        static RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        RE.get_or_init(|| {
+            let source = std::fs::read_to_string(super::repo().join(DCO_SCRIPT)).ok()?;
+            regex::Regex::new(&dco_noreply_pattern(&source)?).ok()
+        })
+        .as_ref()
+    }
+
+    /// G and I. Addresses of GitHub's own services, which name no person:
+    /// Dependabot signs its commits `Signed-off-by: dependabot[bot]
+    /// <support@github.com>`. Exact addresses only.
+    pub const GITHUB_SERVICE_ADDRESSES: &[&str] = &["support@github.com"];
+
+    /// G. The published identities a message body may name. The maintainer's
+    /// address, published in `Cargo.toml`, is not one: in a commit it belongs
+    /// only in the author and committer fields.
+    pub const MESSAGE_IDENTITIES: &[&str] = &["noreply@github.com", "security@sipnab.com"];
+
+    /// The compiled `pattern`, or `None` if it does not compile. Every caller
+    /// fails closed on `None`: a rule that cannot read a line refuses it.
+    /// i_e22 compiles both patterns, so a broken one fails the suite.
+    fn compiled(
+        pattern: &'static str,
+        cell: &'static std::sync::OnceLock<Option<regex::Regex>>,
+    ) -> Option<&'static regex::Regex> {
+        cell.get_or_init(|| regex::Regex::new(pattern).ok())
+            .as_ref()
+    }
+
+    /// G and I. Every address in `text`, or `None` when the pattern does not
+    /// compile.
+    pub fn addresses(text: &str) -> Option<Vec<&str>> {
+        static RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        Some(
+            compiled(MESSAGE_ADDRESS, &RE)?
+                .find_iter(text)
+                .map(|m| m.as_str())
+                .collect(),
+        )
+    }
+
+    /// I. Is this an address a trailer may name: GitHub's alias for an
+    /// account, or one of GitHub's service addresses?
+    pub fn names_no_person(addr: &str) -> bool {
+        noreply().is_some_and(|re| re.is_match(addr))
+            || GITHUB_SERVICE_ADDRESSES.contains(&addr.to_ascii_lowercase().as_str())
+    }
+
+    /// G in a message: a line that names an address at a domain somebody
+    /// owns, other than GitHub's and the project's published ones.
+    pub fn message_address(line: &str) -> bool {
+        names_a_mailbox(addresses(line))
+    }
+
+    /// G, over the addresses one line holds; `None`, a pattern that did not
+    /// compile, refuses the line.
+    pub fn names_a_mailbox(found: Option<Vec<&str>>) -> bool {
+        let Some(found) = found else {
+            return true;
+        };
+        found.iter().any(|a| {
+            let low = a.to_ascii_lowercase();
+            !names_no_person(&low)
+                && !MESSAGE_IDENTITIES.contains(&low.as_str())
+                && (live_address(&low) || PUBLISHED_IDENTITIES.contains(&low.as_str()))
+        })
+    }
+
+    /// I. A trailer, as git unfolds it, that names any address other than
+    /// one that names no person.
+    pub fn trailer_address(trailer: &str) -> bool {
+        names_an_address(addresses(trailer))
+    }
+
+    /// I, over the addresses one trailer holds; `None`, a pattern that did
+    /// not compile, refuses the trailer.
+    pub fn names_an_address(found: Option<Vec<&str>>) -> bool {
+        found.is_none_or(|found| found.iter().any(|a| !names_no_person(a)))
+    }
+
+    /// [`compiled`], for the test that a broken pattern gives `None`.
+    pub fn compiles(pattern: &'static str) -> bool {
+        static RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        compiled(pattern, &RE).is_some()
+    }
+
     /// H. A line that credits an AI assistant as an author of the work.
     ///
     /// The shared detector, `tests/support/ai_attribution.rs`: a credit
@@ -402,6 +528,19 @@ mod guidance {
                                       attribution: no Co-Authored-By naming an assistant, no \
                                       `Generated with` line, no session trailer. Naming an MCP \
                                       client such as Claude Code or Claude Desktop is fine.";
+    pub const MESSAGE_MAILBOX: &str = "Delete the address, or write one at a reserved domain \
+                                       (example.com, or a .test or .invalid name). A commit \
+                                       message carries no personal data: an address belongs \
+                                       only in the commit's author and committer fields.";
+    pub const TRAILER_ADDRESS: &str = "Delete the address from the trailer. A trailer is \
+                                       published on main with the commit, and this project's \
+                                       policy allows an email address only in the commit's \
+                                       author and committer fields. A trailer names a person \
+                                       by name alone, or by GitHub's noreply alias \
+                                       (ID+login@users.noreply.github.com), the form a DCO \
+                                       sign-off takes (CONTRIBUTING.md, \"Signing off \
+                                       commits\"). A commit the owner authored and committed \
+                                       needs no sign-off.";
 }
 
 // -- Messages: commit messages and pull request descriptions ----------
@@ -427,9 +566,12 @@ type LineRule = fn(&str) -> bool;
 /// private identity, with its class.
 ///
 /// The classes are the ones a message can carry: A and B (the host and the
-/// lab's machines), C (the domain), D (the LAN) and E (account and corpus
-/// paths). Not G: a `Signed-off-by:` or `Reported-by:` trailer carries a real
-/// address on purpose.
+/// lab's machines), C (the domain), D (the LAN), E (account and corpus
+/// paths), G (an address at a domain somebody owns, held to
+/// [`rule::message_address`]) and H (AI attribution). Class I, an address in
+/// a trailer, depends on where the trailer block is, which is not a property
+/// of one line: [`trailer_findings`] reads it, and [`all_message_findings`]
+/// joins the two.
 ///
 /// Every line is read, `#` lines included. git removes `#` lines only from a
 /// message written in an editor; `git commit -m` and `-F` keep them, and a
@@ -461,12 +603,13 @@ enum Scissors {
 
 /// [`message_findings`], with the scissors line handled as `scissors` says.
 fn message_findings_from(text: &str, scissors: Scissors) -> Vec<Finding> {
-    let classes: [(&'static str, LineRule); 6] = [
+    let classes: [(&'static str, LineRule); 7] = [
         ("A", |l| rule::lab_host(l) || rule::bare_host(l)),
         ("B", rule::lab_machine),
         ("C", rule::private_domain),
         ("D", rule::lab_address),
         ("E", |l| rule::account_path(l) || rule::corpus_path(l)),
+        ("G", rule::message_address),
         ("H", rule::ai_attribution),
     ];
     let mut found = Vec::new();
@@ -483,6 +626,148 @@ fn message_findings_from(text: &str, scissors: Scissors) -> Vec<Finding> {
     found
 }
 
+/// The trailers of a message, as `git interpret-trailers --parse` reads them.
+fn message_trailers(text: &str, scissors: Scissors) -> Result<Vec<String>, TestError> {
+    message_trailers_with(std::ffi::OsStr::new("git"), text, scissors)
+}
+
+/// The comment character the whole-message mode gives git: a control
+/// character no message line starts with, so no `#` line and no scissors line
+/// is a comment. A message stored whole keeps both, as published.
+const NO_COMMENT_CHAR: &str = "\u{1}";
+
+/// The `git interpret-trailers` command [`message_trailers`] runs.
+///
+/// `--parse` prints each trailer on one line, folded lines joined, and
+/// nothing else. `--no-divider` reads past a `---` line, as `git commit`
+/// does: Dependabot's message bodies hold one. In the editor mode git's own
+/// comment handling applies, the way `git commit` removes `#` lines and
+/// everything below a scissors line from a message it opened in an editor.
+///
+/// No configuration is read -- no system or global file, no `-c` from a
+/// parent, and no repository, because the command runs in `/` with
+/// `GIT_DIR` removed -- so a `trailer.*` setting on one machine cannot change
+/// the verdict there (i_e17).
+fn trailer_command(git: &std::ffi::OsStr, scissors: Scissors) -> Command {
+    let mut cmd = Command::new(git);
+    if scissors == Scissors::Read {
+        cmd.arg("-c")
+            .arg(format!("core.commentChar={NO_COMMENT_CHAR}"));
+    }
+    cmd.args(["interpret-trailers", "--parse", "--no-divider"])
+        .current_dir("/")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd
+}
+
+/// [`message_trailers`], with the git program named. A git that does not
+/// start or fails is an error, never an empty list: a message nobody read is
+/// not a clean message.
+fn message_trailers_with(
+    git: &std::ffi::OsStr,
+    text: &str,
+    scissors: Scissors,
+) -> Result<Vec<String>, TestError> {
+    use std::io::Write as _;
+    let mut child = trailer_command(git, scissors)
+        .spawn()
+        .map_err(|e| format!("`git interpret-trailers` did not start: {e}"))?;
+    // git reads all of its input before it writes, so writing first cannot
+    // stall on a full output pipe.
+    child
+        .stdin
+        .take()
+        .ok_or("`git interpret-trailers` has no standard input")?
+        .write_all(text.as_bytes())
+        .map_err(|e| format!("cannot hand the message to `git interpret-trailers`: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("`git interpret-trailers` did not finish: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`git interpret-trailers` failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// The 1-based line on which each trailer starts, in order.
+///
+/// git prints a trailer as `key: value`, with the key as written, the
+/// spacing around the separator dropped and folded lines joined. Trailers sit
+/// at the end of the message, so they are matched from the last line up: the
+/// last trailer to the last line that starts with its key and a separator,
+/// the one before it above that line. A body line that starts with the same
+/// key is never reached (i_e15). In the editor mode the lines below a
+/// scissors line are not read, as git does not read them.
+fn trailer_lines(
+    text: &str,
+    scissors: Scissors,
+    trailers: &[String],
+) -> Result<Vec<usize>, TestError> {
+    let lines: Vec<&str> = text
+        .lines()
+        .take_while(|l| scissors == Scissors::Read || *l != SCISSORS)
+        .collect();
+    let mut placed = Vec::with_capacity(trailers.len());
+    let mut above = lines.len();
+    for trailer in trailers.iter().rev() {
+        let key = trailer.split(':').next().unwrap_or_default();
+        let at = (0..above).rev().find(|&i| {
+            lines[i]
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start_matches([' ', '\t']).starts_with(':'))
+        });
+        let Some(i) = at else {
+            return Err(format!(
+                "git reads the trailer {trailer:?}, but no line above line {} starts with \
+                 its key, so its line is unknown",
+                above + 1
+            )
+            .into());
+        };
+        placed.push(i + 1);
+        above = i;
+    }
+    placed.reverse();
+    Ok(placed)
+}
+
+/// Every trailer of a message that names an address (class I), with its line.
+fn trailer_findings(text: &str, scissors: Scissors) -> Result<Vec<Finding>, TestError> {
+    let trailers = message_trailers(text, scissors)?;
+    let lines = trailer_lines(text, scissors, &trailers)?;
+    Ok(lines
+        .into_iter()
+        .zip(trailers)
+        .filter(|(_, t)| rule::trailer_address(t))
+        .map(|(n, t)| (n, "I", t))
+        .collect())
+}
+
+/// Every finding in a message: the line classes and the trailer class I, in
+/// line order. The check the commit-msg hook, pre-push and CI run.
+fn all_message_findings(text: &str, scissors: Scissors) -> Result<Vec<Finding>, TestError> {
+    let mut found = message_findings_from(text, scissors);
+    found.extend(trailer_findings(text, scissors)?);
+    found.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    Ok(found)
+}
+
 /// The replacement text for a class `message_findings` reports.
 fn guidance_for(class: &str) -> &'static str {
     match class {
@@ -490,7 +775,9 @@ fn guidance_for(class: &str) -> &'static str {
         "B" => guidance::MACHINE,
         "C" => guidance::DOMAIN,
         "D" => guidance::ADDRESS,
+        "G" => guidance::MESSAGE_MAILBOX,
         "H" => guidance::AI_ATTRIBUTION,
+        "I" => guidance::TRAILER_ADDRESS,
         _ => guidance::PATH,
     }
 }
@@ -531,7 +818,7 @@ fn message_in_sipnab_scan_message_names_no_private_identity() -> Result<(), Test
             .into());
         }
     };
-    let found = message_findings_from(&text, scissors);
+    let found = all_message_findings(&text, scissors)?;
     let report: Vec<String> = found
         .iter()
         .map(|(n, class, line)| {
@@ -628,13 +915,26 @@ fn m4_nothing_below_the_scissors_line_is_scanned() -> Result<(), TestError> {
     Ok(())
 }
 
-/// M5. Trailers are not flagged: they carry real addresses on purpose.
+/// M5. A trailer naming an address is refused, a reserved one included.
+///
+/// This test said the opposite until 2026-11-25: trailers were thought to
+/// carry real addresses on purpose. A trailer is published on `main` with its
+/// commit, so the owner's rule since then is that an address appears only in
+/// the author and committer fields (class I).
 #[test]
-fn m5_trailers_carrying_real_addresses_are_not_flagged() -> Result<(), TestError> {
+fn m5_trailers_carrying_addresses_are_refused() -> Result<(), TestError> {
     let message = "Fix the parser\n\nBody.\n\n\
                    Signed-off-by: Someone <someone@example.org>\n\
                    Reported-by: A Person <person@real-company.com>\n";
-    assert_eq!(message_findings(message), Vec::<Finding>::new());
+    let found: Vec<(usize, &str)> = all_message_findings(message, Scissors::Cut)?
+        .into_iter()
+        .map(|(n, c, _)| (n, c))
+        .collect();
+    assert_eq!(
+        found,
+        vec![(5, "I"), (6, "G"), (6, "I")],
+        "both trailers name an address; the second is also at a real domain"
+    );
     Ok(())
 }
 
@@ -3384,6 +3684,750 @@ fn h10_the_guide_names_the_ai_attribution_rule() -> Result<(), TestError> {
     Ok(())
 }
 
+// -- Class I: an address in a commit message trailer -------------------
+//
+// A trailer is published on `main` with its commit, and the project's policy
+// keeps personal data out of commit messages: an email address may appear only
+// in a commit's author and committer fields. So no trailer names an address,
+// not even a reserved one, with two exceptions that name no person: GitHub's
+// noreply alias for an account, the form a contributor's DCO sign-off takes
+// (CONTRIBUTING.md, "Signing off commits"), and `support@github.com`, the
+// address Dependabot signs its commits with. A trailer is what
+// `git interpret-trailers --parse` reads as one. The commits on `main` that
+// already carry an address in a sign-off stay, by the owner's decision of
+// 2026-11-25: the hook, pre-push and CI read only new messages.
+//
+// In the body of a message an address is held to class G: one at a domain
+// somebody owns is refused, a reserved one (`example.com`, `.invalid`, `.test`)
+// is accepted. Unlike the tracked-file scan, a message may not carry the
+// maintainer's address either.
+
+/// The address classes (G and I) of every finding in `message`, by line.
+fn address_classes(
+    message: &str,
+    scissors: Scissors,
+) -> Result<Vec<(usize, &'static str)>, TestError> {
+    Ok(all_message_findings(message, scissors)?
+        .into_iter()
+        .filter(|(_, c, _)| *c == "G" || *c == "I")
+        .map(|(n, c, _)| (n, c))
+        .collect())
+}
+
+/// Asserts `message` holds no address finding, in either scissors mode.
+fn assert_no_address(message: &str) -> Result<(), TestError> {
+    for scissors in [Scissors::Cut, Scissors::Read] {
+        let found = address_classes(message, scissors)?;
+        assert!(
+            found.is_empty(),
+            "{message:?} ({scissors:?}) must carry no address finding: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Asserts `message`, read whole, holds exactly the `want` address findings.
+fn assert_addresses(message: &str, want: &[(usize, &str)]) -> Result<(), TestError> {
+    for scissors in [Scissors::Cut, Scissors::Read] {
+        let found = address_classes(message, scissors)?;
+        assert_eq!(
+            found, want,
+            "{message:?} ({scissors:?}): the address findings differ"
+        );
+    }
+    Ok(())
+}
+
+/// A DCO sign-off with a numeric noreply alias, the form CONTRIBUTING.md asks for.
+const NOREPLY_SIGN_OFF: &str =
+    "Signed-off-by: A Contributor <12345+contrib-login@users.noreply.github.com>";
+
+/// I-S1. A message with no trailer block and no address passes.
+#[test]
+fn i_s01_a_message_without_trailers_passes() -> Result<(), TestError> {
+    assert_no_address("Fix the parser\n\nThe header folding was read twice.\n")
+}
+
+/// I-S2. A DCO sign-off naming a numeric GitHub noreply alias passes.
+#[test]
+fn i_s02_a_noreply_sign_off_passes() -> Result<(), TestError> {
+    assert_no_address(&format!("Fix the parser\n\nBody.\n\n{NOREPLY_SIGN_OFF}\n"))
+}
+
+/// I-S3. The older noreply form, without the numeric ID, passes.
+#[test]
+fn i_s03_an_older_noreply_alias_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: A Contributor <contrib@users.noreply.github.com>\n",
+    )
+}
+
+/// I-S4. Dependabot's own sign-off passes: it names GitHub's service, not a person.
+#[test]
+fn i_s04_dependabots_sign_off_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "build(deps): bump serde from 1.0.1 to 1.0.2\n\nBumps serde.\n\n\
+         Signed-off-by: dependabot[bot] <support@github.com>\n",
+    )
+}
+
+/// I-S5. A bot co-author named by its noreply alias, brackets and all, passes.
+#[test]
+fn i_s05_a_bot_noreply_co_author_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nCo-authored-by: dependabot[bot] \
+         <49699333+dependabot[bot]@users.noreply.github.com>\n",
+    )
+}
+
+/// I-S6. An `example.com` address in the body passes.
+#[test]
+fn i_s06_a_reserved_address_in_the_body_passes() -> Result<(), TestError> {
+    assert_no_address("Fix the parser\n\nReproduce with alice@example.com as the caller.\n")
+}
+
+/// I-S7. An `.invalid` address in the body passes.
+#[test]
+fn i_s07_an_invalid_tld_address_in_the_body_passes() -> Result<(), TestError> {
+    assert_no_address("Fix the parser\n\nThe From header was <sip:bob@host.example.invalid>.\n")
+}
+
+/// I-S8. A trailer that names a person without an address passes.
+#[test]
+fn i_s08_a_trailer_without_an_address_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nReviewed-by: A Reviewer\nReported-by: Another Person\n",
+    )
+}
+
+/// I-S9. Reference trailers -- an issue number, a URL -- pass.
+#[test]
+fn i_s09_reference_trailers_pass() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nFixes: #123\nRefs: https://github.com/NormB/sipnab/issues/1\n",
+    )
+}
+
+/// I-S10. A merge message, with git's conflict comment lines, passes.
+#[test]
+fn i_s10_a_merge_message_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "Merge origin/main into fix/header-folding\n\n# Conflicts:\n#\tsrc/parser.rs\n",
+    )
+}
+
+/// I-S11. A fixup message passes.
+#[test]
+fn i_s11_a_fixup_message_passes() -> Result<(), TestError> {
+    assert_no_address("fixup! Fix the parser\n")
+}
+
+/// I-S12. A SIP Call-ID in the body is not a mailbox and passes.
+#[test]
+fn i_s12_a_call_id_in_the_body_passes() -> Result<(), TestError> {
+    assert_no_address("Fix the parser\n\nThe Call-ID call-1234@sipnab.bench was split.\n")
+}
+
+/// I-S13. A `Key: value` line inside a body paragraph is not a trailer.
+///
+/// git reads a paragraph as a trailer block when every line is a trailer, or
+/// a quarter of them are and one is a trailer git writes itself
+/// (`Signed-off-by:`). One `Cc:` line among prose is neither, so a reserved
+/// address there is body text.
+#[test]
+fn i_s13_a_key_value_line_inside_prose_is_body_text() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nThe report came in as\nCc: someone@example.com\nwith no other detail.\n",
+    )
+}
+
+/// I-S14. The project's published contact address in the body passes.
+#[test]
+fn i_s14_the_security_contact_in_the_body_passes() -> Result<(), TestError> {
+    assert_no_address("Fix the parser\n\nReport the next one to security@sipnab.com.\n")
+}
+
+/// I-F1. A sign-off naming an address at a real domain is refused.
+#[test]
+fn i_f01_a_real_address_in_a_sign_off_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: A Person <a.person@real-company.com>\n",
+        &[(5, "G"), (5, "I")],
+    )
+}
+
+/// I-F2. A sign-off naming a reserved address is refused: trailers carry none.
+#[test]
+fn i_f02_a_reserved_address_in_a_sign_off_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: A Person <person@example.com>\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-F3. Two trailers with addresses are both refused, each on its own line.
+#[test]
+fn i_f03_two_trailers_with_addresses_are_both_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nReported-by: One <one@example.org>\n\
+         Reviewed-by: Two\nSigned-off-by: Three <three@example.net>\n",
+        &[(5, "I"), (7, "I")],
+    )
+}
+
+/// I-F4. A human co-author's address is refused.
+#[test]
+fn i_f04_a_co_author_address_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nCo-Authored-By: A Person <a.person@example.com>\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-F5. An AI co-author trailer is refused as class H and for its address.
+#[test]
+fn i_f05_an_ai_co_author_is_refused_twice() -> Result<(), TestError> {
+    let message = "Fix the parser\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n";
+    let found = all_message_findings(message, Scissors::Read)?;
+    for class in ["H", "I"] {
+        assert!(
+            found.iter().any(|(n, c, _)| *n == 5 && *c == class),
+            "an AI co-author must be refused as class {class} on line 5: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// I-F6. An address on a folded trailer's continuation line is refused at the key line.
+#[test]
+fn i_f06_an_address_on_a_folded_line_is_refused() -> Result<(), TestError> {
+    let message = "Fix the parser\n\nBody.\n\nReported-by: A Person\n <person@example.org>\n";
+    assert_addresses(message, &[(5, "I")])?;
+    let found = all_message_findings(message, Scissors::Read)?;
+    assert!(
+        found
+            .iter()
+            .any(|(_, c, l)| *c == "I" && l == "Reported-by: A Person <person@example.org>"),
+        "the finding must show the trailer as git unfolds it: {found:?}"
+    );
+    Ok(())
+}
+
+/// I-F7. The project's published addresses may not sign off a commit.
+///
+/// The maintainer's address is published in `Cargo.toml`, and the security
+/// contact on the site, so the tracked-file scan spares them. In a trailer they
+/// are personal data on `main` like any other.
+#[test]
+fn i_f07_published_identities_are_refused_in_a_trailer() -> Result<(), TestError> {
+    for addr in rule::PUBLISHED_IDENTITIES {
+        if *addr == "noreply@github.com" {
+            continue;
+        }
+        let message = format!("Fix the parser\n\nBody.\n\nSigned-off-by: Someone <{addr}>\n");
+        let found = address_classes(&message, Scissors::Read)?;
+        assert!(
+            found.contains(&(5, "I")),
+            "a sign-off naming {addr} must be refused as class I: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// I-F8. The maintainer's address is refused in the body of a message.
+#[test]
+fn i_f08_the_maintainers_address_is_refused_in_the_body() -> Result<(), TestError> {
+    let maintainer = rule::PUBLISHED_IDENTITIES
+        .iter()
+        .find(|a| a.ends_with("@gmail.com"))
+        .ok_or("PUBLISHED_IDENTITIES names no maintainer address")?;
+    assert_addresses(
+        &format!("Fix the parser\n\nAsk {maintainer} for the capture.\n"),
+        &[(3, "G")],
+    )
+}
+
+/// I-F9. An address at a real domain in the body is refused.
+#[test]
+fn i_f09_a_real_address_in_the_body_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nThe report came from someone@real-company.com.\n",
+        &[(3, "G")],
+    )
+}
+
+/// I-F10. An address at a reserved TLD is refused in a trailer.
+#[test]
+fn i_f10_a_test_tld_address_in_a_trailer_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nReported-by: A Person <person@lab.test>\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-F11. A trailer block right after the subject is read.
+#[test]
+fn i_f11_a_trailer_block_after_the_subject_is_read() -> Result<(), TestError> {
+    assert_addresses("Fix the parser\n\nCc: someone@example.net\n", &[(3, "I")])
+}
+
+/// I-F12. An address that only resembles a noreply alias is refused.
+#[test]
+fn i_f12_a_noreply_lookalike_is_refused() -> Result<(), TestError> {
+    for addr in [
+        "12345+contrib@noreply.github.com",
+        "12345+contrib@users.noreply.github.com.example.org",
+        "someone@github.com",
+    ] {
+        let message = format!("Fix the parser\n\nBody.\n\nSigned-off-by: Someone <{addr}>\n");
+        let found = address_classes(&message, Scissors::Read)?;
+        assert!(
+            found.contains(&(5, "I")),
+            "{addr} is not GitHub's alias and must be refused: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// I-F13. A bare address, without angle brackets, is refused.
+#[test]
+fn i_f13_a_bare_address_in_a_trailer_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nCc: someone@example.com\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-F14. A `mailto:` link in a trailer is refused.
+#[test]
+fn i_f14_a_mailto_link_in_a_trailer_is_refused() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nLink: mailto:someone@example.com\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-F15. A sign-off makes a mixed paragraph a trailer block, as git reads it.
+#[test]
+fn i_f15_a_sign_off_makes_a_mixed_paragraph_a_trailer_block() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nas reported\nCc: someone@example.com\nSigned-off-by: A Person\n",
+        &[(4, "I")],
+    )
+}
+
+/// I-F16. The message script refuses a trailer address and names class I.
+#[test]
+fn i_f16_the_message_script_refuses_a_trailer_address() -> Result<(), TestError> {
+    let (code, out) = run_message_script(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: A Person <person@example.com>\n",
+        "trailer-address",
+    )?;
+    assert_eq!(code, 1, "a trailer address must be refused: {out}");
+    assert!(
+        out.contains("line 5: class I:"),
+        "the refusal must name the line and class I: {out}"
+    );
+    assert!(
+        out.contains("noreply"),
+        "the refusal must say which form a sign-off takes: {out}"
+    );
+    Ok(())
+}
+
+/// I-S15. The message script passes a noreply sign-off.
+#[test]
+fn i_s15_the_message_script_passes_a_noreply_sign_off() -> Result<(), TestError> {
+    let (code, out) = run_message_script(
+        &format!("Fix the parser\n\nBody.\n\n{NOREPLY_SIGN_OFF}\n"),
+        "noreply-sign-off",
+    )?;
+    assert_eq!(code, 0, "a noreply sign-off must pass: {out}");
+    Ok(())
+}
+
+/// I-E1. In an editor, nothing below the scissors line is read.
+#[test]
+fn i_e01_the_editor_mode_stops_at_the_scissors_line() -> Result<(), TestError> {
+    let message = format!(
+        "Fix the parser\n\nBody.\n{SCISSORS}\n\nSigned-off-by: A Person <person@example.com>\n"
+    );
+    let found = address_classes(&message, Scissors::Cut)?;
+    assert!(
+        found.is_empty(),
+        "below the scissors line is not the message: {found:?}"
+    );
+    Ok(())
+}
+
+/// I-E2. A message stored whole is read past the scissors line.
+#[test]
+fn i_e02_the_whole_message_mode_reads_past_the_scissors_line() -> Result<(), TestError> {
+    let message = format!(
+        "Fix the parser\n\nBody.\n{SCISSORS}\n\nSigned-off-by: A Person <person@example.com>\n"
+    );
+    let found = address_classes(&message, Scissors::Read)?;
+    assert_eq!(
+        found,
+        vec![(6, "I")],
+        "git stores this trailer, so it is read"
+    );
+    Ok(())
+}
+
+/// I-E3. In an editor, a `#` comment line in the trailer block is not a trailer.
+#[test]
+fn i_e03_a_comment_line_is_not_a_trailer_in_the_editor() -> Result<(), TestError> {
+    let message = "Fix the parser\n\nBody.\n\nReviewed-by: A Reviewer\n# Signed-off-by: A Person <person@example.com>\n";
+    let found = address_classes(message, Scissors::Cut)?;
+    assert!(found.is_empty(), "git removes the comment line: {found:?}");
+    Ok(())
+}
+
+/// I-E4. CRLF line ends do not hide a trailer.
+#[test]
+fn i_e04_crlf_line_ends_do_not_hide_a_trailer() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\r\n\r\nBody.\r\n\r\nSigned-off-by: A Person <person@example.com>\r\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-E5. Of two trailers with one key, the one with the address is named.
+#[test]
+fn i_e05_the_finding_names_the_right_one_of_two_like_trailers() -> Result<(), TestError> {
+    assert_addresses(
+        &format!(
+            "Fix the parser\n\nBody.\n\n{NOREPLY_SIGN_OFF}\nSigned-off-by: A Person <person@example.com>\n"
+        ),
+        &[(6, "I")],
+    )
+}
+
+/// I-E6. Two trailers with one key and an address each are named on their lines.
+#[test]
+fn i_e06_two_like_trailers_are_named_on_their_lines() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: One <one@example.com>\n\
+         Signed-off-by: Two <two@example.com>\n",
+        &[(5, "I"), (6, "I")],
+    )
+}
+
+/// I-E7. A one-line message that looks like a trailer is a subject, not a trailer.
+#[test]
+fn i_e07_a_subject_shaped_like_a_trailer_is_not_a_trailer() -> Result<(), TestError> {
+    assert_no_address("Signed-off-by: A Person <person@example.com>\n")
+}
+
+/// I-E8. An empty message has no finding and no error.
+#[test]
+fn i_e08_an_empty_message_has_no_finding() -> Result<(), TestError> {
+    assert_no_address("")
+}
+
+/// I-E9. A `---` line does not end the message: Dependabot's bodies hold one.
+#[test]
+fn i_e09_a_divider_line_does_not_end_the_message() -> Result<(), TestError> {
+    assert_addresses(
+        "build(deps): bump serde\n\nBumps serde.\n\n---\nupdated-dependencies:\n\
+         - dependency-name: serde\n...\n\nSigned-off-by: A Person <person@example.com>\n",
+        &[(10, "I")],
+    )
+}
+
+/// I-E10. Letter case changes nothing: the key and the address are read in any case.
+#[test]
+fn i_e10_letter_case_does_not_hide_a_trailer_address() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nSIGNED-OFF-BY: A Person <PERSON@EXAMPLE.COM>\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-E11. A noreply alias in mixed case is still GitHub's alias.
+#[test]
+fn i_e11_a_mixed_case_noreply_alias_passes() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nSigned-off-by: A Contributor <12345+Contrib@Users.NoReply.GitHub.com>\n",
+    )
+}
+
+/// I-E12. A name outside ASCII does not move the finding off its line.
+#[test]
+fn i_e12_a_name_outside_ascii_keeps_its_line() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nCorrigé.\n\nReviewed-by: Jürgen Müller\n\
+         Signed-off-by: Zoë Ångström <zoe@example.com>\n",
+        &[(6, "I")],
+    )
+}
+
+/// I-E13. A version pin is not an address.
+#[test]
+fn i_e13_a_version_pin_is_not_an_address() -> Result<(), TestError> {
+    assert_no_address(
+        "Fix the parser\n\nBody.\n\nBumps: serde@1.0.200\nBumps: npm:left-pad@1.3.0\n",
+    )
+}
+
+/// I-E14. Separator spacing does not hide a trailer.
+#[test]
+fn i_e14_space_before_the_separator_does_not_hide_a_trailer() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nBody.\n\nSigned-off-by : A Person <person@example.com>\n",
+        &[(5, "I")],
+    )
+}
+
+/// I-E15. A trailer key that also starts a body line is placed on the trailer.
+#[test]
+fn i_e15_a_key_repeated_in_the_body_is_placed_on_the_trailer() -> Result<(), TestError> {
+    assert_addresses(
+        "Fix the parser\n\nCc: is how the report was copied\nto the list.\n\n\
+         Cc: someone@example.com\n",
+        &[(6, "I")],
+    )
+}
+
+/// I-E16. A check that could not run git refuses rather than passes.
+#[test]
+fn i_e16_a_missing_git_is_an_error_not_a_pass() {
+    let missing = std::ffi::OsStr::new("/nonexistent/sipnab-no-such-git");
+    let got = message_trailers_with(missing, "Fix\n\nCc: a@example.com\n", Scissors::Read);
+    assert!(
+        got.is_err(),
+        "a git that did not start must be an error: {got:?}"
+    );
+}
+
+/// I-E19. A git that reads the message and fails is an error, not a pass.
+#[test]
+fn i_e19_a_failing_git_is_an_error_not_a_pass() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let git = dir.path().join("failing-git");
+    executable::write_executable(
+        &git,
+        "#!/bin/sh\ncat > /dev/null\necho refused >&2\nexit 3\n",
+    )?;
+    let got = message_trailers_with(git.as_os_str(), "Fix\n\nCc: a@example.com\n", Scissors::Cut);
+    let err = got.err().ok_or("a git that exited 3 must be an error")?;
+    assert!(
+        err.to_string().contains("refused"),
+        "the error must carry git's own message: {err}"
+    );
+    Ok(())
+}
+
+/// I-E20. A trailer git reports that no line holds is an error, not a pass.
+#[test]
+fn i_e20_a_trailer_with_no_line_is_an_error() {
+    let got = trailer_lines(
+        "Fix the parser\n\nBody.\n",
+        Scissors::Read,
+        &["Signed-off-by: A Person <person@example.com>".to_string()],
+    );
+    assert!(
+        got.is_err(),
+        "a trailer that no line starts must not be dropped: {got:?}"
+    );
+}
+
+/// I-E21. In an editor, a like line below the scissors line does not take the finding.
+#[test]
+fn i_e21_a_like_line_below_the_scissors_does_not_take_the_finding() -> Result<(), TestError> {
+    let message = format!(
+        "Fix the parser\n\nSigned-off-by: A Person <person@example.com>\n{SCISSORS}\n\
+         Signed-off-by: Below\n"
+    );
+    assert_eq!(
+        address_classes(&message, Scissors::Cut)?,
+        vec![(3, "I")],
+        "the trailer git reads is on line 3, above the scissors line"
+    );
+    Ok(())
+}
+
+/// I-E22. Both address patterns compile.
+///
+/// The rules fail closed on a pattern that does not compile, refusing every
+/// line, so a broken pattern must fail here by name rather than as a refusal
+/// of every message.
+#[test]
+fn i_e22_the_address_patterns_compile() -> Result<(), TestError> {
+    regex::Regex::new(rule::MESSAGE_ADDRESS)
+        .map_err(|e| format!("{} does not compile: {e}", rule::MESSAGE_ADDRESS))?;
+    assert!(
+        rule::noreply().is_some(),
+        "the noreply rule must be read from {} and compile",
+        rule::DCO_SCRIPT
+    );
+    Ok(())
+}
+
+/// I-E27. The noreply rule is the DCO check's own, read from its script.
+///
+/// The owner's decision of 2026-11-18 sets every sign-off address to a GitHub
+/// noreply address, and the required DCO check enforces it. A trailer may name
+/// exactly the addresses that check accepts, so the rule has one source:
+/// `_NOREPLY` in scripts/check-dco.py. No second copy can drift from it.
+#[test]
+fn i_e27_the_noreply_rule_is_read_from_the_dco_script() -> Result<(), TestError> {
+    let source = std::fs::read_to_string(repo().join(rule::DCO_SCRIPT))?;
+    let pattern = rule::dco_noreply_pattern(&source)
+        .ok_or_else(|| format!("no `_NOREPLY` pattern found in {}", rule::DCO_SCRIPT))?;
+    assert!(
+        pattern.starts_with("(?i)^(?:") && pattern.ends_with(")$"),
+        "the pattern must be anchored and without case: {pattern}"
+    );
+    assert!(
+        pattern.contains(r"@users\.noreply\.github\.com"),
+        "the pattern must be GitHub's noreply domain: {pattern}"
+    );
+    Ok(())
+}
+
+/// I-E28. A changed `_NOREPLY` that the reader does not recognize gives no rule.
+///
+/// Then no address is an alias and every noreply sign-off is refused, which
+/// fails I-S2 and I-E22 by name instead of passing an address.
+#[test]
+fn i_e28_an_unrecognized_noreply_definition_gives_no_rule() {
+    let good = "_NOREPLY = re.compile(\n    r\"x@users\\.noreply\\.github\\.com\",\n    re.IGNORECASE,\n)\n";
+    assert_eq!(
+        rule::dco_noreply_pattern(good).as_deref(),
+        Some(r"(?i)^(?:x@users\.noreply\.github\.com)$"),
+        "the reader must take the raw string as written"
+    );
+    for (source, why) in [
+        ("", "no definition"),
+        (
+            "_NOREPLY = re.compile(\n    r\"x@users\\.noreply\\.github\\.com\",\n)\n",
+            "no IGNORECASE: the rule would differ in letter case",
+        ),
+        (
+            "_NOREPLY = re.compile(\n    \"x@users\\\\.noreply\\\\.github\\\\.com\",\n    re.IGNORECASE,\n)\n",
+            "not a raw string: the escapes would differ",
+        ),
+        (
+            "_NOREPLY = re.compile(r\"x@users\\.noreply\\.github\\.com\", re.IGNORECASE)\n",
+            "a one-line form the reader does not know",
+        ),
+    ] {
+        assert_eq!(
+            rule::dco_noreply_pattern(source),
+            None,
+            "{why} must give no rule"
+        );
+    }
+}
+
+/// I-E29. The noreply rule agrees with the DCO check's documented forms.
+#[test]
+fn i_e29_the_noreply_rule_takes_the_dco_forms_and_no_other() {
+    for (addr, alias) in [
+        ("12345+contrib-login@users.noreply.github.com", true),
+        ("contrib@users.noreply.github.com", true),
+        ("49699333+dependabot[bot]@users.noreply.github.com", true),
+        ("12345+Contrib@Users.NoReply.GitHub.com", true),
+        ("-contrib@users.noreply.github.com", false),
+        ("12345+contrib@noreply.github.com", false),
+        ("contrib@users.noreply.github.com.example.org", false),
+        ("x12345+contrib@users.noreply.github.com", false),
+    ] {
+        assert_eq!(
+            rule::noreply().is_some_and(|re| re.is_match(addr)),
+            alias,
+            "{addr}: alias {alias} expected"
+        );
+    }
+}
+
+/// I-E23. A pattern that does not compile refuses, never passes.
+#[test]
+fn i_e23_a_pattern_that_does_not_compile_refuses() {
+    assert!(
+        !rule::compiles("(unclosed"),
+        "a broken pattern must compile to nothing"
+    );
+    assert!(
+        rule::names_a_mailbox(None),
+        "a body line the pattern could not read must be refused"
+    );
+    assert!(
+        rule::names_an_address(None),
+        "a trailer the pattern could not read must be refused"
+    );
+    assert!(
+        !rule::names_a_mailbox(Some(Vec::new())),
+        "a line with no address is not refused"
+    );
+    assert!(
+        !rule::names_an_address(Some(Vec::new())),
+        "a trailer with no address is not refused"
+    );
+}
+
+/// I-E17. The trailer parse reads no git configuration.
+///
+/// `trailer.*` settings change which lines git reads as trailers, and a
+/// commit-msg hook runs with the repository's `GIT_DIR` set. The verdict must
+/// be the same on every machine, so the command reads no system, global or
+/// repository configuration and runs outside any repository.
+#[test]
+fn i_e17_the_trailer_parse_reads_no_git_configuration() {
+    let cmd = trailer_command(std::ffi::OsStr::new("git"), Scissors::Read);
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    for (key, want) in [
+        ("GIT_CONFIG_NOSYSTEM", Some("1")),
+        ("GIT_CONFIG_GLOBAL", Some("/dev/null")),
+        ("GIT_DIR", None),
+        ("GIT_WORK_TREE", None),
+        ("GIT_CONFIG_PARAMETERS", None),
+        ("GIT_CONFIG_COUNT", None),
+    ] {
+        assert!(
+            envs.iter().any(|(k, v)| k == key && v.as_deref() == want),
+            "the trailer parse must set {key} to {want:?}: {envs:?}"
+        );
+    }
+    assert_eq!(
+        cmd.get_current_dir(),
+        Some(Path::new("/")),
+        "the trailer parse must run outside any repository"
+    );
+}
+
+/// I-E18. Each mode reads `#` lines the way git stores the message.
+///
+/// In an editor git removes a `#` line, so the paragraph below is the `Cc:`
+/// line alone: a trailer block. Stored whole, the `#` line stays, and a
+/// paragraph of one prose line and one `Cc:` line, with no trailer git writes
+/// itself, is body text, where a reserved address is accepted.
+#[test]
+fn i_e18_each_mode_reads_hash_lines_as_git_stores_them() -> Result<(), TestError> {
+    let message = "Fix the parser\n\nBody.\n\n# a note\nCc: someone@example.com\n";
+    assert_eq!(
+        address_classes(message, Scissors::Cut)?,
+        vec![(6, "I")],
+        "in an editor the comment goes and the Cc line is a trailer"
+    );
+    assert_eq!(
+        address_classes(message, Scissors::Read)?,
+        vec![],
+        "stored whole, the paragraph is body text"
+    );
+    Ok(())
+}
+
 // -- Structural: the scan itself --------------------------------------
 
 /// The scan reads a real corpus, and the files it exists to cover.
@@ -3450,6 +4494,7 @@ fn the_guide_names_every_class_the_gate_enforces() -> Result<(), TestError> {
         ("F transcripts", "gitignore"),
         ("G mailboxes", ".test"),
         ("H AI attribution", "co-authored-by"),
+        ("I trailer addresses", "git interpret-trailers --parse"),
     ] {
         assert!(
             guide.contains(clause),
@@ -3499,6 +4544,18 @@ fn the_guide_promises_nothing_the_gate_does_not_enforce() -> Result<(), TestErro
     assert!(
         rule::ai_attribution("Co-Authored-By: Claude <noreply@anthropic.com>"),
         "the guide promises AI attribution is caught"
+    );
+    assert!(
+        rule::trailer_address("Signed-off-by: Someone <someone@example.com>"),
+        "the guide promises an address in a trailer is caught, a reserved one included"
+    );
+    assert!(
+        !rule::trailer_address("Signed-off-by: A <12345+login@users.noreply.github.com>"),
+        "the guide promises a noreply sign-off passes"
+    );
+    assert!(
+        rule::message_address("Ask someone@real-domain.com for it"),
+        "the guide promises an address at a real domain in a message is caught"
     );
     Ok(())
 }

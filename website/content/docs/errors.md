@@ -76,6 +76,7 @@ each one covers in full.
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
+| `4` | Free disk space under an output fell below `--min-free-disk`. The last stderr line starts `sipnab stopped: free disk space under` and names the directory, its free bytes and the floor. Free space there, or lower the floor. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
@@ -2683,6 +2684,18 @@ Writing the per-message output to standard output failed, for a reason other tha
 **What to do:** Check that the destination of standard output has space and accepts writes. The destination is a file or disk you redirected it to.
 
 **Exit code:** 1.
+
+### `Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits 1.`
+
+The first write of the per-message output to standard output failed, for a reason other than a closed pipe. sipnab prints this line when the write fails, once per run, so a live capture shows it while it runs. The `Failed to write output: {e}` line repeats the error at the end of the run.
+
+- `{e}` is the error, for example `No space left on device (os error 28)`.
+- The run goes on: `-O`, the vCon files and the reports are still written.
+- sipnab does not count a closed pipe, such as `| head`, as an error.
+
+**What to do:** Free space on, or fix write access to, the file or disk standard output goes to. To keep the output, stop the run and start it again with standard output somewhere that has space.
+
+**Exit code:** 1, at the end of the run.
 
 ### `Failed to write packet: {}`
 

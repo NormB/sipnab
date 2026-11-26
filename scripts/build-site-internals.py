@@ -26,6 +26,7 @@ Default OUTPUT_DIR is `website/content/docs/internals`.
 
 from __future__ import annotations
 
+import argparse
 import html
 import re
 import sys
@@ -665,14 +666,26 @@ def render_index(src_text: str) -> str:
     return head + BANNER.format(src=f"docs/internals/{INDEX_SRC}") + body
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """The optional output path. argparse, not a fixed slot of the argument list: a `--help` read
+    as a path writes the pages into a directory named `--help`. Tested by
+    scripts/tests/test_generator_args.py."""
+    p = argparse.ArgumentParser(
+        prog="build-site-internals.py",
+        description="Mirror docs/internals/ into the Zola site.",
+    )
+    p.add_argument(
+        "output_dir", nargs="?", type=Path, metavar="OUTPUT_DIR",
+        help="where the pages go (default website/content/docs/internals)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     root = Path(__file__).resolve().parent.parent
     src_dir = root / "docs" / "internals"
-    out_dir = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else root / "website" / "content" / "docs" / "internals"
-    )
+    out_dir = args.output_dir or root / "website" / "content" / "docs" / "internals"
 
     # rglob, not glob: the registry check is bidirectional, so a top-level-only
     # scan means a nested page is neither published nor reported as missing —

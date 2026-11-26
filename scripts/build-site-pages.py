@@ -19,12 +19,14 @@ step 5c in `.githooks/pre-commit`).
 Every page here had the same defect: two hand-maintained copies that drifted.
 Add a page by registering it in PAGES — never by copying this file.
 
-Run from the repo root:  python3 scripts/build-site-pages.py [OUTPUT_DIR]
-Default OUTPUT_DIR is `website/content/docs`.
+Run from the repo root:  python3 scripts/build-site-pages.py [PAGES_DIR [STATIC_DIR]]
+Default PAGES_DIR is `website/content/docs`, default STATIC_DIR
+`website/static`. `--help` prints the usage.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import posixpath
 import re
@@ -1366,22 +1368,35 @@ def check_descriptions() -> None:
         )
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """The two optional paths. argparse, not a fixed slot of the argument list: on 2026-11-25
+    `build-site-pages.py --help` wrote 88 pages into a directory named
+    `--help`. Tested by scripts/tests/test_generator_args.py."""
+    p = argparse.ArgumentParser(
+        prog="build-site-pages.py",
+        description="Mirror the operator docs from docs/ into the Zola site.",
+    )
+    p.add_argument(
+        "pages_dir", nargs="?", type=Path, metavar="PAGES_DIR",
+        help="where the pages go (default website/content/docs)",
+    )
+    # STATIC_DIR redirects the llms files the same way PAGES_DIR redirects
+    # the pages. Without it a caller that passes a temp dir still overwrites
+    # the committed `llms-full.txt`, so a freshness gate could not diff the
+    # two without mutating the tree it is checking.
+    p.add_argument(
+        "static_dir", nargs="?", type=Path, metavar="STATIC_DIR",
+        help="where llms.txt, llms-full.txt and the images go "
+        "(default website/static)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     root = Path(__file__).resolve().parent.parent
-    out_dir = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else root / "website" / "content" / "docs"
-    )
-    # argv[2] redirects the llms files the same way argv[1] redirects the
-    # pages. Without it a caller that passes a temp dir still overwrites the
-    # committed `llms-full.txt`, so a freshness gate could not diff the two
-    # without mutating the tree it is checking.
-    static_dir = (
-        Path(sys.argv[2])
-        if len(sys.argv) > 2
-        else root / "website" / "static"
-    )
+    out_dir = args.pages_dir or root / "website" / "content" / "docs"
+    static_dir = args.static_dir or root / "website" / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     check_descriptions()

@@ -1,0 +1,19 @@
+FROBNICATE sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.138;branch=z9hG4bKmm38
+Max-Forwards: 38
+To: sip:desk@example.org
+From: sip:front@example.net;tag=mm38
+Call-ID: mismatch02.l7z8x9
+CSeq: 38 INVITE
+Contact: <sip:front@192.0.2.138>
+Content-Type: application/sdp
+l: 153
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.138
+s=check
+c=IN IP4 192.0.2.138
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

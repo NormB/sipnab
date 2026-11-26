@@ -36,9 +36,9 @@ Default OUT is THIRD-PARTY-NOTICES.md
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 # Libraries cargo never sees: they come from the host's package manager or, for
@@ -352,9 +352,25 @@ def render(rows: list[tuple[str, str, str]]) -> str:
     return "\n".join(out)
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """The optional output path. argparse, not a fixed slot of the argument list: a `--help` read
+    as a path writes the notices into a file named `--help`. Tested by
+    scripts/tests/test_generator_args.py."""
+    p = argparse.ArgumentParser(
+        prog="build-third-party-notices.py",
+        description="Write the notices of the crates and system libraries the binaries ship.",
+    )
+    p.add_argument(
+        "out", nargs="?", type=Path, metavar="OUT",
+        help="the file to write (default THIRD-PARTY-NOTICES.md)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     root = Path(__file__).resolve().parent.parent
-    out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "THIRD-PARTY-NOTICES.md"
+    out_path = args.out or root / "THIRD-PARTY-NOTICES.md"
     meta = cargo_metadata()
     rows = distributed_packages(meta)
     out_path.write_text(render(rows), encoding="utf-8")

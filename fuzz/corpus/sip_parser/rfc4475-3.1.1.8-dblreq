@@ -1,0 +1,22 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.80;branch=z9hG4bKdbl8a
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:desk@example.org;tag=db8
+Call-ID: dblreq.f9e8d7
+CSeq: 18 REGISTER
+Contact: <sip:desk@192.0.2.80>
+Content-Length: 0
+
+
+MESSAGE sip:other@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.81;branch=z9hG4bKdbl8b
+Max-Forwards: 70
+To: sip:other@example.org
+From: sip:front@example.net;tag=db8b
+Call-ID: dblreq.second.a1
+CSeq: 19 MESSAGE
+Content-Type: text/plain
+Content-Length: 7
+
+stray

@@ -1,0 +1,9 @@
+SIP/2.0 100 
+Via: SIP/2.0/UDP 192.0.2.113;branch=z9hG4bKnr13
+Call-ID: noreason.l1k2j3
+CSeq: 13 INVITE
+From: <sip:front@example.net>;tag=nr13a
+To: <sip:desk@example.org>;tag=nr13b
+Contact: <sip:desk@192.0.2.113>
+Content-Length: 0
+

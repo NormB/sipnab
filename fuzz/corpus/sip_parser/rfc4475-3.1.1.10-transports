@@ -1,0 +1,13 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/TCP a1.example.org;branch=z9hG4bKtp1
+Via: SIP/2.0/FUTURE a2.example.org;branch=z9hG4bKtp2
+Via: SIP/2.0/TLS a3.example.org;branch=z9hG4bKtp3
+Via: SIP/2.0/SCTP a4.example.org;branch=z9hG4bKtp4
+Via: SIP/2.0/UDP a5.example.org;branch=z9hG4bKtp5
+Max-Forwards: 70
+To: sip:desk@example.org
+From: <sip:front@example.org>;tag=tp10
+Call-ID: transports.r4e3w2
+CSeq: 110 OPTIONS
+l: 0
+
