@@ -479,6 +479,11 @@ fn f_a_sequence_beyond_sixty_four_bits_is_kept() -> Result<(), TestError> {
 }
 
 /// A name that is not UTF-8 is not removed.
+///
+/// Not on macOS: APFS refuses to create a file whose name is not valid
+/// UTF-8 (`EILSEQ`, "Illegal byte sequence"), so there such a name cannot
+/// be in the report directory and the fixture cannot be written.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn f_a_name_that_is_not_utf8_is_kept() -> Result<(), TestError> {
     use std::os::unix::ffi::OsStrExt as _;
