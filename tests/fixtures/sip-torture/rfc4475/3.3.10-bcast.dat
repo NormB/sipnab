@@ -1,0 +1,19 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.0.2.150;branch=z9hG4bKbc50a
+Via: SIP/2.0/UDP 255.255.255.255;branch=z9hG4bKbc50b
+Call-ID: bcast.v7b8n9
+CSeq: 50 INVITE
+From: sip:front@example.net;tag=bc50a
+To: sip:desk@example.org;tag=bc50b
+Contact: <sip:desk@192.0.2.150>
+Content-Type: application/sdp
+Content-Length: 153
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.150
+s=check
+c=IN IP4 192.0.2.150
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

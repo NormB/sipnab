@@ -1,0 +1,14 @@
+# Every security advisory this repository has published on GitHub, one a line.
+#
+# The maintainer adds a line in the change that publishes an advisory, and a
+# line is never removed. SECURITY.md's "Published advisories" section links
+# each one; tests/security_policy_doc_test.rs (the `adv_` tests) holds the two
+# to each other, so the test reads this file instead of the network.
+#
+# Fields, separated by spaces:
+#   id               the GHSA id
+#   published        the date GitHub published it, YYYY-MM-DD
+#   first last       the first and the last affected release
+#   patched          the first release with the fix
+#   cves             the CVE ids it references, comma-separated, or `-`
+GHSA-vjqw-738j-4chx  2026-11-25  0.5.218  0.5.247  0.5.248  CVE-2023-49092

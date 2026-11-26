@@ -1,0 +1,49 @@
+INVITE sip:desk@example.org SIP/2.0
+To: "A display name that goes on and on, lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy" <sip:desk@example.org:5070;p1=lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy;lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthyname=short;lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthyflag>
+F: sip:lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy@example.net;tag=444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444;xlengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy=ylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy
+Call-ID: longreq.lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy
+CSeq: 7007 INVITE
+X-lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy-Header: value-lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy; p-lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy=q-lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy
+Via: SIP/2.0/TCP n30.example.org
+Via  : SIP/2.0/TCP n29.example.org;branch=z9hG4bKlong29
+v  : SIP/2.0/TCP n28.example.org;branch=z9hG4bKlong28
+V : SIP/2.0/TCP n27.example.org;branch=z9hG4bKlong27
+ViA: SIP/2.0/TCP n26.example.org;branch=z9hG4bKlong26
+vIa: SIP/2.0/TCP n25.example.org;branch=z9hG4bKlong25
+via: SIP/2.0/TCP n24.example.org;branch=z9hG4bKlong24
+VIA: SIP/2.0/TCP n23.example.org;branch=z9hG4bKlong23
+V: SIP/2.0/TCP n22.example.org;branch=z9hG4bKlong22
+v: SIP/2.0/TCP n21.example.org;branch=z9hG4bKlong21
+Via: SIP/2.0/TCP n20.example.org;branch=z9hG4bKlong20
+Via  : SIP/2.0/TCP n19.example.org;branch=z9hG4bKlong19
+v  : SIP/2.0/TCP n18.example.org;branch=z9hG4bKlong18
+V : SIP/2.0/TCP n17.example.org;branch=z9hG4bKlong17
+ViA: SIP/2.0/TCP n16.example.org;branch=z9hG4bKlong16
+vIa: SIP/2.0/TCP n15.example.org;branch=z9hG4bKlong15
+via: SIP/2.0/TCP n14.example.org;branch=z9hG4bKlong14
+VIA: SIP/2.0/TCP n13.example.org;branch=z9hG4bKlong13
+V: SIP/2.0/TCP n12.example.org;branch=z9hG4bKlong12
+v: SIP/2.0/TCP n11.example.org;branch=z9hG4bKlong11
+Via: SIP/2.0/TCP n10.example.org;branch=z9hG4bKlong10
+Via  : SIP/2.0/TCP n9.example.org;branch=z9hG4bKlong9
+v  : SIP/2.0/TCP n8.example.org;branch=z9hG4bKlong8
+V : SIP/2.0/TCP n7.example.org;branch=z9hG4bKlong7
+ViA: SIP/2.0/TCP n6.example.org;branch=z9hG4bKlong6
+vIa: SIP/2.0/TCP n5.example.org;branch=z9hG4bKlong5
+via: SIP/2.0/TCP n4.example.org;branch=z9hG4bKlong4
+VIA: SIP/2.0/TCP n3.example.org;branch=z9hG4bKlong3
+V: SIP/2.0/TCP n2.example.org;branch=z9hG4bKlong2
+Via: SIP/2.0/TCP n1.example.org;received=192.0.2.71;branch=z9hG4bKlengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy
+Max-Forwards: 70
+Contact: <sip:lengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthylengthy@n1.example.org>
+Content-Type: application/sdp
+l: 151
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.71
+s=check
+c=IN IP4 192.0.2.71
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

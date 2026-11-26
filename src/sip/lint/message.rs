@@ -18,10 +18,13 @@ use crate::sip::session_id::{SessionId, SessionIdDeviation, SessionIdHalf};
 
 use super::FindingSink;
 use super::finding::{
-    BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
-    CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
-    MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, RECORD_ROUTE_NOT_LOOSE, REFRESHER_MISSING,
-    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, REQUEST_LINE_SPACING, SESSION_EXPIRES_BELOW_MIN_SE,
+    ADDR_SPEC_WHITESPACE, BRANCH_COOKIE, BRANCH_NO_IDENTIFIER, CONTACT_MISSING_IN_2XX,
+    CONTENT_LENGTH_INVALID, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED, CSEQ_METHOD_MISMATCH,
+    DATE_NOT_GMT, DISPLAY_NAME_UNQUOTED, EMPTY_PARAMETER, HEADER_CONTROL_BYTE,
+    IPV6_REFERENCE_UNBRACKETED, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING, MAX_FORWARDS_RANGE,
+    MIN_SE_TOO_SMALL, QUOTED_STRING_UNTERMINATED, RECORD_ROUTE_NOT_LOOSE, REFRESHER_MISSING,
+    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, REQUEST_LINE_SPACING, REQUEST_URI_BRACKETED,
+    REQUEST_URI_HEADERS, REQUEST_URI_WHITESPACE, SESSION_EXPIRES_BELOW_MIN_SE,
     SESSION_EXPIRES_TOO_SMALL, SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE,
     SINGULAR_HEADER_REPEATED, URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
 };
@@ -258,6 +261,13 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     max_forwards(msg, index, sink);
     branch_cookie(msg, index, sink);
     request_line_spacing(msg, index, sink);
+    request_uri_shape(msg, index, sink);
+    ipv6_references(msg, index, sink);
+    empty_parameters(msg, index, sink);
+    content_length_value(msg, index, sink);
+    address_shapes(msg, index, sink);
+    date_zone(msg, index, sink);
+    branch_identifier(msg, index, sink);
     cseq_method(msg, index, sink);
     session_timers(msg, index, sink);
     dialog_target(msg, index, sink);
@@ -821,6 +831,345 @@ fn request_line_spacing(msg: &SipMessage, index: usize, sink: &mut FindingSink<'
         "§7.1 separates the three elements by single SP characters. A strict \
          receiver rejects the extra whitespace with 400; a lenient one forwards a \
          line it has to rewrite.",
+    );
+}
+
+// ── RFC 4475 and RFC 5118 shape rules ──────────────────────────────────
+//
+// Each rule below answers one torture-test case that sipnab used to parse
+// without a word. The helpers are pure functions of a header value or a URI,
+// so both sides of each rule can be driven without a message.
+
+/// Header fields holding a name-addr or addr-spec the address rules read.
+const ADDRESS_HEADERS: [&str; 6] = ["To", "From", "Contact", "Reply-To", "Route", "Record-Route"];
+
+/// Header fields whose value is a comma-separated list (`1#element`).
+const LIST_HEADERS: [&str; 4] = ["Via", "Contact", "Route", "Record-Route"];
+
+/// Header fields whose elements carry `;`-separated parameters.
+const PARAM_HEADERS: [&str; 7] = [
+    "Via",
+    "To",
+    "From",
+    "Contact",
+    "Reply-To",
+    "Route",
+    "Record-Route",
+];
+
+/// `value` split at every `sep` that sits outside a quoted string and outside
+/// angle brackets.
+pub(crate) fn split_top_level(value: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut angle, mut in_quote, mut escaped) = (0, 0u32, false, false);
+    for (i, c) in value.char_indices() {
+        if in_quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_quote = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quote = true,
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            _ if c == sep && angle == 0 => {
+                out.push(&value[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&value[start..]);
+    out
+}
+
+/// Whether `value` opens a quoted string that it never closes.
+pub(crate) fn has_unclosed_quote(value: &str) -> bool {
+    let (mut in_quote, mut escaped) = (false, false);
+    for c in value.chars() {
+        if in_quote && escaped {
+            escaped = false;
+        } else if in_quote && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_quote = !in_quote;
+        }
+    }
+    in_quote
+}
+
+/// The `host[:port]` of a SIP or SIPS URI, or `None` for another scheme.
+///
+/// The userinfo ends at the LAST `@`: neither uri-parameters nor headers admit
+/// an unescaped `@`, while the user part admits `?` and `;` (RFC 4475
+/// sections 3.1.1.2 and 3.1.1.9 send both).
+pub(crate) fn sip_uri_host_port(uri: &str) -> Option<&str> {
+    let (scheme, rest) = uri.trim().split_once(':')?;
+    if !(scheme.eq_ignore_ascii_case("sip") || scheme.eq_ignore_ascii_case("sips")) {
+        return None;
+    }
+    let host = rest.rfind('@').map_or(rest, |at| &rest[at + 1..]);
+    let end = host
+        .find(|c: char| matches!(c, ';' | '?' | '>') || c.is_whitespace())
+        .unwrap_or(host.len());
+    Some(&host[..end])
+}
+
+/// Whether a `host[:port]` is an IPv6 address written without brackets: it
+/// does not open with `[` and holds two or more colons, which no hostname,
+/// IPv4 address or single port separator can.
+pub(crate) fn is_unbracketed_ipv6(host_port: &str) -> bool {
+    !host_port.starts_with('[') && host_port.matches(':').count() >= 2
+}
+
+/// The unquoted text before `<` and the bracketed addr-spec of one name-addr
+/// element, or `None` for a bare addr-spec. A quoted display name is skipped
+/// whole, so it leaves `""` before the bracket: quoting is what makes any
+/// display name legal.
+pub(crate) fn name_addr_parts(element: &str) -> Option<(&str, &str)> {
+    let rest = crate::sip::message::skip_quoted_display_name(element);
+    let open = rest.find('<')?;
+    let close = rest[open..].find('>').map_or(rest.len(), |c| open + c);
+    Some((rest[..open].trim(), &rest[open + 1..close]))
+}
+
+/// The address elements of every [`ADDRESS_HEADERS`] field, with the header
+/// name each came from.
+fn address_elements(msg: &SipMessage) -> Vec<(&'static str, &str)> {
+    let mut out = Vec::new();
+    for name in ADDRESS_HEADERS {
+        for value in msg.headers_by_name(name) {
+            if LIST_HEADERS.contains(&name) {
+                out.extend(split_top_level(value, ',').into_iter().map(|e| (name, e)));
+            } else {
+                out.push((name, value));
+            }
+        }
+    }
+    out
+}
+
+/// The addr-spec of an address element: between the brackets, or the bare
+/// form up to its first `;`.
+fn element_uri(element: &str) -> &str {
+    match name_addr_parts(element) {
+        Some((_, inner)) => inner,
+        None => element.split(';').next().unwrap_or(element),
+    }
+}
+
+/// RFC 4475 sections 3.1.2.7, 3.1.2.8 and 3.1.2.11 — the Request-URI itself.
+fn request_uri_shape(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    let Some(uri) = msg.request_uri.as_deref().filter(|_| msg.is_request) else {
+        return;
+    };
+    if uri.starts_with('<') || uri.ends_with('>') {
+        sink.push(
+            &REQUEST_URI_BRACKETED,
+            index,
+            format!("Request-URI {uri}"),
+            "a bare Request-URI, no < >",
+            "§25.1 gives the Request-URI no angle brackets; they belong to name-addr in \
+             header fields. A proxy that forwards the brackets sends a request no strict \
+             element accepts.",
+        );
+    }
+    if uri.contains([' ', '\t']) {
+        sink.push(
+            &REQUEST_URI_WHITESPACE,
+            index,
+            format!("Request-URI {uri:?} holds whitespace"),
+            "a Request-URI with no SP or HTAB",
+            "No URI production admits whitespace, so the Request-Line has more than three \
+             elements and a strict receiver rejects it with 400.",
+        );
+    }
+    let is_sip = sip_uri_host_port(uri).is_some();
+    let after_user = uri.rfind('@').map_or(uri, |at| &uri[at + 1..]);
+    if is_sip && after_user.contains('?') {
+        sink.push(
+            &REQUEST_URI_HEADERS,
+            index,
+            format!("Request-URI {uri} carries ?headers"),
+            "a Request-URI without a headers component",
+            "§19.1.1 Table 1 does not allow the headers component in a Request-URI. A proxy \
+             must not forward it, and must not turn it into header fields.",
+        );
+    }
+}
+
+/// [RFC 5118 section 4.2](https://www.rfc-editor.org/rfc/rfc5118.html#section-4.2) — IPv6 hosts without `[` `]`.
+fn ipv6_references(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    let mut places: Vec<String> = Vec::new();
+    if msg.is_request
+        && let Some(hp) = msg.request_uri.as_deref().and_then(sip_uri_host_port)
+        && is_unbracketed_ipv6(hp)
+    {
+        places.push(format!("Request-URI host {hp}"));
+    }
+    for (name, element) in address_elements(msg) {
+        if let Some(hp) = sip_uri_host_port(element_uri(element))
+            && is_unbracketed_ipv6(hp)
+        {
+            places.push(format!("{name} host {hp}"));
+        }
+    }
+    for row in msg.via_headers() {
+        for element in split_top_level(row, ',') {
+            let protocol_and_sent_by = element.split(';').next().unwrap_or("").trim();
+            let sent_by = protocol_and_sent_by
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or("");
+            if is_unbracketed_ipv6(sent_by) {
+                places.push(format!("Via sent-by {sent_by}"));
+            }
+        }
+    }
+    for place in places {
+        sink.push(
+            &IPV6_REFERENCE_UNBRACKETED,
+            index,
+            place,
+            "[IPv6 address], with any port after the ]",
+            "§25.1 writes an IPv6 host as IPv6reference, \"[\" IPv6address \"]\". Without the \
+             brackets the last group and a port cannot be told apart, and RFC 5118 §4.2 \
+             expects 400 Bad Request.",
+        );
+    }
+}
+
+/// [RFC 4475 section 3.1.2.1](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.2.1) — `;;` and `,,` in parameter-bearing fields.
+fn empty_parameters(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    for name in PARAM_HEADERS {
+        for value in msg.headers_by_name(name) {
+            let elements = if LIST_HEADERS.contains(&name) {
+                split_top_level(value, ',')
+            } else {
+                vec![value]
+            };
+            let empty_element = elements.len() > 1 && elements.iter().any(|e| e.trim().is_empty());
+            let empty_param = elements.iter().any(|e| {
+                split_top_level(e, ';')
+                    .iter()
+                    .skip(1)
+                    .any(|p| p.trim().is_empty())
+            });
+            if empty_element || empty_param {
+                sink.push(
+                    &EMPTY_PARAMETER,
+                    index,
+                    format!("{name} holds an empty element between separators"),
+                    "every ; and , followed by a parameter or element",
+                    "§25.1 lists and parameter sets admit no empty element. RFC 4475 §3.1.2.1 \
+                     calls such a message invalid; a receiver that splits on the separators \
+                     reads parameters that were never sent.",
+                );
+            }
+        }
+    }
+}
+
+/// [RFC 4475 section 3.1.2.3](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.2.3) — a Content-Length that is not `1*DIGIT`.
+fn content_length_value(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    for value in msg.headers_by_name("Content-Length") {
+        let v = value.trim();
+        if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+            sink.push(
+                &CONTENT_LENGTH_INVALID,
+                index,
+                format!("Content-Length: {v}"),
+                "Content-Length: <decimal octet count>",
+                "§20.14 makes the value 1*DIGIT. A value that is negative or not a number \
+                 leaves the body length unknown: over TCP the framing is lost and the \
+                 connection has to close.",
+            );
+        }
+    }
+}
+
+/// RFC 4475 sections 3.1.2.6, 3.1.2.14 and 3.1.2.15 — address syntax.
+fn address_shapes(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    for name in ADDRESS_HEADERS {
+        for value in msg.headers_by_name(name) {
+            if has_unclosed_quote(value) {
+                sink.push(
+                    &QUOTED_STRING_UNTERMINATED,
+                    index,
+                    format!("{name} opens a quoted string it never closes"),
+                    format!("{name}: \"display name\" <uri>"),
+                    "§25.1 ends a quoted-string at its DQUOTE. Without one the receiver either \
+                     rejects the field or guesses where the name ends, and the guess decides \
+                     which URI it reads.",
+                );
+            }
+        }
+    }
+    for (name, element) in address_elements(msg) {
+        let Some((display, inner)) = name_addr_parts(element) else {
+            continue;
+        };
+        if inner.contains(char::is_whitespace) {
+            sink.push(
+                &ADDR_SPEC_WHITESPACE,
+                index,
+                format!("{name} has whitespace inside <{inner}>"),
+                format!("{name}: <{}>", inner.trim()),
+                "§25.1 admits no whitespace in an addr-spec. RFC 4475 §3.1.2.14: a parser \
+                 must not break on it, and rejecting the request is reasonable.",
+            );
+        }
+        let token_words = display
+            .split([' ', '\t'])
+            .all(|w| w.bytes().all(crate::sip::parser::is_token_byte));
+        if !display.is_empty() && !token_words {
+            sink.push(
+                &DISPLAY_NAME_UNQUOTED,
+                index,
+                format!("{name} display name {display} is not quoted"),
+                format!("{name}: \"{display}\" <uri>"),
+                "§25.1 allows an unquoted display name only as tokens separated by LWS. A \
+                 comma or other separator outside quotes splits the field where the sender \
+                 did not mean it to.",
+            );
+        }
+    }
+}
+
+/// [RFC 4475 section 3.1.2.12](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.2.12) — a `Date` outside GMT.
+fn date_zone(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    let Some(date) = msg.header("Date").map(str::trim) else {
+        return;
+    };
+    if !date.ends_with(" GMT") {
+        sink.push(
+            &DATE_NOT_GMT,
+            index,
+            format!("Date: {date}"),
+            "Date: <rfc1123-date> GMT",
+            "§20.17 allows only GMT. RFC 4475 §3.1.2.12: an element that does not use the \
+             Date may ignore it, so this matters only where the Date is read.",
+        );
+    }
+}
+
+/// [RFC 4475 section 3.2.1](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.2.1) — a branch that is only the magic cookie.
+fn branch_identifier(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !msg.is_request || msg.top_via_branch() != Some(BRANCH_MAGIC_COOKIE) {
+        return;
+    }
+    sink.push(
+        &BRANCH_NO_IDENTIFIER,
+        index,
+        "top Via branch=z9hG4bK with nothing after the cookie",
+        "branch=z9hG4bK<unique identifier>",
+        "§8.1.1.7 requires a branch unique across space and time. The bare cookie claims \
+         RFC 3261 transaction matching and gives it nothing to match on.",
     );
 }
 

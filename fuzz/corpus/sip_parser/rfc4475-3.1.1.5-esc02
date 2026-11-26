@@ -1,0 +1,12 @@
+PU%42LI%53H sip:service.example.org SIP/2.0
+Via: SIP/2.0/TCP host7.example.org;branch=z9hG4bK77%qq%zz
+To: "%Q%41" <sip:svc@example.org>
+From: "%Q%41" <sip:svc@example.org>;tag=pct55
+Call-ID: esc02.k3j4h5g6
+CSeq: 6006 PU%42LI%53H
+Max-Forwards: 70
+Contact: <sip:c1@h1.example.org>
+Con%74act: <sip:c2@h2.example.org>
+Contact: <sip:c3@h3.example.org>
+l: 0
+

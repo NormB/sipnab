@@ -1,0 +1,9 @@
+OPTIONS sip:desk@example.org SIP/3.0
+Via:    SIP/3.0/UDP 192.0.2.136;branch=z9hG4bKbv36
+Max-Forwards: 70
+From:   <sip:pat@example.net>;tag=bv36
+To:     <sip:desk@example.org>
+Call-ID: badvers.d1f2g3@192.0.2.136
+CSeq:   36 OPTIONS
+l: 0
+

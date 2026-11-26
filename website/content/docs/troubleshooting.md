@@ -2004,6 +2004,8 @@ anything extra.
   - By default reports land in `~/.local/state/sipnab/`, and in
     `/var/lib/sipnab/` under the packaged systemd unit.
   - Each name has the form `sipnab-crash-<date>-<time>-<pid>-<n>.log`.
+  - sipnab keeps the newest 20 reports and removes older ones; see
+    [How many crash reports sipnab keeps](@/docs/run-as-a-service.md#how-many-crash-reports-sipnab-keeps).
   - A `report_dir` in the
     [`[crash]` config section](@/docs/config.md#crash) moves them.
   - If you closed the terminal, list the newest one:

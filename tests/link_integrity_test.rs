@@ -1948,11 +1948,17 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // verify example is now a stdio run, not a run of that unit.
     // 2764 -> 2765 (security.txt, +1): docs/install.md's "I want to" table
     // links its new "Report a security problem" section.
-    // 2765 -> 2771 (IP fragments, #926, +6): docs/troubleshooting.md 2 (the
+    // 2765 -> 2769 (FILE-2 b, +4): docs/cli-reference.md's `--min-free-disk`
+    // row and exit-code `4` row link "Stop a capture before the disk fills",
+    // and that how-to links "Write a unit of your own" and "Change the
+    // packaged unit with a drop-in".
+    // 2769 -> 2770 (FILE-2 c, +1): docs/troubleshooting.md "Send us a crash
+    // report" links "How many crash reports sipnab keeps".
+    // 2770 -> 2776 (IP fragments, #926, +6): docs/troubleshooting.md 2 (the
     // "Find your symptom" row and the section's link to encapsulations.md),
     // docs/encapsulations.md 1, docs/errors.md 1, docs/prometheus-metrics.md 1
     // and docs/rest-api.md 1 (each links "Requests missing, replies present").
-    const EXPECTED_WIKI_LINKS: usize = 2771;
+    const EXPECTED_WIKI_LINKS: usize = 2776;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2130,7 +2136,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // table links docs/internals/build-ci-release.md#scorecard-token.
     // 175 -> 176 (security.txt): SECURITY.md links
     // docs/install.md#report-a-security-problem.
-    const EXPECTED_COMMUNITY_LINKS: usize = 176;
+    // 176 -> 177 (no address in a trailer): CONTRIBUTING.md's "Signing off
+    // commits" links #never-publish-a-machine-an-account-or-a-network.
+    const EXPECTED_COMMUNITY_LINKS: usize = 177;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

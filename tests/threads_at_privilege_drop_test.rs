@@ -70,7 +70,7 @@ const AT_THE_DROP: [&str; 5] = [
 /// and the relay snapshot's fan-out of `--relay-holdings`), or they are
 /// joined before the capture starts (the archive password command's reader,
 /// the relay snapshot's fan-out).
-const AFTER_OR_WITHOUT_A_DROP: [&str; 25] = [
+const AFTER_OR_WITHOUT_A_DROP: [&str; 26] = [
     "src/app/fleet.rs",
     "src/app/fleet_center.rs",
     "src/app/fleet_member.rs",
@@ -81,6 +81,8 @@ const AFTER_OR_WITHOUT_A_DROP: [&str; 25] = [
     "src/app/vcon_enrich.rs",
     "src/capture/archive/password.rs",
     "src/capture/hep_delivery.rs",
+    // `main` starts the free-disk watch after `bootstrap::launch` returns.
+    "src/disk_floor.rs",
     "src/mcp/load.rs",
     "src/mcp/sweep.rs",
     "src/mcp/tls_capture.rs",
@@ -364,7 +366,7 @@ mod before_the_launch {
     /// a text found on the line or on one of the three code lines above it, and
     /// the rows of `sipnab::early_exit` that leave through it. The one exit
     /// with no row is the end of a run that did launch.
-    const MAIN_EXITS: [(&str, &[&str]); 24] = [
+    const MAIN_EXITS: [(&str, &[&str]); 25] = [
         (
             "worker_process::run_if_requested()",
             &["--internal-kill-worker"],
@@ -390,7 +392,8 @@ mod before_the_launch {
             &["--relay-sessions", "relay question refusal"],
         ),
         ("run_cores_file(&cli, &loaded, &mut plan)", &["--cores"]),
-        ("launch_and_dispatch(cli, loaded, plan)", &[]),
+        ("launch_and_dispatch(cli, loaded, plan, disk_watch)", &[]),
+        ("sipnab::disk_floor::start(", &["--min-free-disk"]),
         (
             "bootstrap::install_archive_passwords(",
             &["archive password error"],

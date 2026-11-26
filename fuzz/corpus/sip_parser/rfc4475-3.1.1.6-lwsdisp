@@ -1,0 +1,9 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 203.0.113.6;branch=z9hG4bKnolws6
+Max-Forwards: 70
+To: sip:desk@example.org
+From: Desk<sip:desk@example.net>;tag=nd6
+Call-ID: lwsdisp.m1n2b3
+CSeq: 16 OPTIONS
+l: 0
+

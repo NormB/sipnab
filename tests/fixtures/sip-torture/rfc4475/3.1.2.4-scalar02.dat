@@ -1,0 +1,12 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/TCP 192.0.2.124;branch=z9hG4bKsc24
+To: <sip:desk@example.org>
+From: <sip:desk@example.org>;tag=sc24
+CSeq: 99999999999999999999 REGISTER
+Call-ID: scalar02.u8i9o0
+Max-Forwards: 999
+Expires: 999999999999999999999999999999999999999999999999999999999999
+Contact: <sip:desk@192.0.2.124>
+   ;expires=99999999999999
+Content-Length: 0
+

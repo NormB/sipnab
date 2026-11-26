@@ -1,0 +1,9 @@
+OPTIONS mysteryscheme:opaque-thing-42 SIP/2.0
+Via: SIP/2.0/TCP 192.0.2.142;branch=z9hG4bKus42
+Max-Forwards: 42
+To: sip:desk@example.org
+From: sip:front@example.net;tag=us42
+Call-ID: unkscm.w7e8r9
+CSeq: 42 OPTIONS
+Content-Length: 0
+

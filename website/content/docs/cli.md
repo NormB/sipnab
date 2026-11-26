@@ -226,6 +226,18 @@ sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --aut
 - Verify: the run ends by itself, and `ls -l /var/captures` shows `sip.pcapng` and `sip_00001.pcapng` to `sip_00003.pcapng`, about 200 MiB together.
 - Troubleshoot: before 0.5.264, `--autostop filesize` read only the size of the open file, which each rotation starts again, so with a `--split` smaller than the limit the run never stopped. Upgrade, or stop that run with `--duration` or Ctrl-C.
 
+Stop the capture while 2 GiB are still free under `/var/captures`. The run closes its files and exits `4`:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --min-free-disk 2G
+```
+
+Turn the free-disk check off, the 1 GiB warning included, for a run on a disk that always has less than 1 GiB free:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --min-free-disk 0
+```
+
 **The drop user creates the output files.** Run as root, sipnab does this:
 
 - It opens the capture device.
@@ -318,6 +330,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
+| `--min-free-disk` | `<SIZE>` | warn under 1 GiB | 0.5.275 | Stop the capture when the free disk space under an output falls below SIZE, such as `2G` or `500M` (binary units: `1G` is 1024 MiB; sipnab refuses a bare number other than `0`, and `MB`/`GB`). sipnab reads the free space of the directory of `-O` (every `--split` file sits beside it), `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and each vCon rule before the capture opens and every 5 seconds. Below SIZE before the capture opens, the run does not start; below it later, the run stops as `SIGTERM` stops it. Either way it exits `4`. Without the flag a directory under 1 GiB free gets one warning and the run goes on; `0` turns the check and the warning off. See [Stop a capture before the disk fills](@/docs/run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | 0.3.0 | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | 0.3.0 | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Unlike `sngrep` and `sipgrep`, sipnab takes no match expression here; match SIP text with `-e`. A filter typed here that does not compile says so, and sipnab refuses a lone argument that names an existing file, naming the `-I` it was missing. Config: `[capture] bpf_filter` |
@@ -3316,6 +3329,7 @@ Scripts can rely on these:
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code. A relay question the run cannot ask also exits `2` before the run reads anything: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` or `--relay-compare` with no `--rtpengine-control`, on a run that reads a capture file, or naming an address that is not `IP:port` |
 | `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
 | `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
+| `4` | Stopped for disk space: the free space under an output fell below `--min-free-disk`. The last stderr line names the directory, its free bytes and the floor. Below the floor before the capture opened, the run did not start. A run that would have exited non-zero for its own reason keeps that code. See [Stop a capture before the disk fills](@/docs/run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away. sipnab stops as it does for `SIGTERM`, which exits `0` like `SIGINT`, and exits `129` instead, so a supervisor that restarts on failure restarts it. A run that would have exited non-zero keeps that code |
 | `130` | Interrupted — Ctrl-C typed at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits. A stop signal at the prompt is a stop like any other: `0`, or `129` after `SIGHUP` |
 

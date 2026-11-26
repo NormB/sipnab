@@ -198,6 +198,44 @@ def test_failure_the_unreleased_heading_joined_to_the_text_above_is_refused():
     assert len(got) == 1 and "'## [Unreleased]'" in got[0]
 
 
+# 2026-11-25: origin/main held 14 headings with no blank line before them, all
+# in released sections below the first one, which the check did not read. The
+# two shapes found: a release heading joined to a sub-bullet, and a `###`
+# heading of an older release joined to a sub-bullet.
+OLDER = "\n## [0.5.36] - 2026-07-24\n\n### Fixed\n\n- **Reduced builds compile.**\n  - So reduced-feature CI builds compile.\n"
+
+
+def test_failure_an_older_release_heading_joined_to_a_sub_bullet_is_refused():
+    text = log(sections(Changed=A), released=RELEASED + OLDER + "## [0.5.35] - 2026-07-23\n\n- **A fix.**\n")
+    line = text.splitlines().index("## [0.5.35] - 2026-07-23") + 1
+    got = cm.blank_line_problems(text)
+    assert got == [f"no blank line before the heading '## [0.5.35] - 2026-07-23' (line {line}): a merge joined "
+                   "it to the line above; put one empty line between them."], got
+
+
+def test_failure_a_kind_heading_of_an_older_release_joined_to_a_sub_bullet_is_refused():
+    text = log(sections(Changed=A), released=RELEASED + OLDER + "### Security\n\n- **A fix.**\n  - Was: broken.\n")
+    line = text.splitlines().index("### Security") + 1
+    got = cm.blank_line_problems(text)
+    assert len(got) == 1 and f"'### Security' (line {line})" in got[0], got
+
+
+def test_failure_every_joined_heading_of_the_released_part_is_named():
+    joined = RELEASED + OLDER + "### Security\n\n- **A.**\n  - Was: a.\n## [0.5.35] - 2026-07-23\n\n- **B.**\n"
+    got = cm.blank_line_problems(log(sections(Changed=A), released=joined))
+    assert ["### Security" in got[0], "## [0.5.35]" in got[1], len(got)] == [True, True, 2], got
+
+
+def test_success_older_release_headings_after_a_blank_line_pass():
+    spaced = RELEASED + OLDER + "\n## [0.5.35] - 2026-07-23\n\n### Fixed\n\n- **A fix.**\n  - Was: broken.\n"
+    assert cm.blank_line_problems(log(sections(Changed=A), released=spaced)) == []
+
+
+def test_edge_a_heading_line_inside_a_code_fence_of_a_released_entry_is_not_a_heading():
+    fenced = RELEASED + "\n## [0.5.35] - 2026-07-23\n\n- **A command.**\n\n  ```sh\n  echo x\n## not a heading\n  ```\n"
+    assert cm.blank_line_problems(log(sections(Changed=A), released=fenced)) == []
+
+
 def test_failure_an_entry_merged_into_a_released_section_is_refused():
     # 2026-11-13, three times: an entry inside a released section.
     released = RELEASED.replace("### Fixed\n\n", "### Fixed\n\n" + D)
@@ -509,3 +547,857 @@ def test_edge_the_pin_file_holds_one_sha256_or_is_absent():
     pin = cm.ROOT / cm.PIN
     if pin.exists():
         assert len(cm.pin_of(pin.read_text())) == 64
+
+
+# ── The released part against every commit the result holds ────────────────
+#
+# On 2026-11-25 a merge-train commit merged a car branch (MERGE_HEAD
+# b7899d949, forked before 0.5.272) into a train that already held the
+# 0.5.272 release. The merge put the car's [Unreleased] entries inside the
+# released [0.5.272] section. The hook compared the index with MERGE_HEAD
+# only: the car's released part (0.5.271 and older) is the end of any newer
+# one, and an entry of the base that ours no longer holds in [Unreleased] is
+# not a problem, so the gate printed "the CHANGELOG is as the base
+# b7899d94956a has it" and passed. It happened in four merges that day.
+#
+# The rule: a commit never changes what was released before it, except on
+# purpose with the pin. So the released part of the index must end with the
+# released part of EVERY commit the result is built on: HEAD (the first
+# parent, or the commit a rebase or a cherry-pick is replaying onto),
+# MERGE_HEAD while a merge is open, and the merge base with origin/main.
+# Whichever of them holds the newest release then judges it, whatever branch
+# MERGE_HEAD is. Neither origin/main's tip nor the newest tag is the rule: a
+# branch forked before a release does not hold that release, and would fail
+# against either for no fault of its own; a tag may not be fetched at all.
+
+OLD = "## [0.5.253] - 2026-11-13\n\n### Fixed\n\n- **A drain no longer ends on a signal.**\n  - Was: it ended.\n"
+H = "- **History files are compressed.**\n  - Effect: smaller files.\n"
+LEAD_H = H.splitlines()[0]
+NEW_SECTION = "## [0.5.254] - 2026-11-14\n\n### Added\n\n" + H + "\n"
+assert NEW_SECTION + OLD == RELEASED
+# The defect: the car's D inside the released 0.5.254 section.
+INJECTED = "## [0.5.254] - 2026-11-14\n\n### Added\n\n" + D + H + "\n" + OLD
+GOOD_MERGE = log(sections(Added=D), released=RELEASED)
+BAD_MERGE = log("", released=INJECTED)
+SHA = "a" * 40
+SHB = "b" * 40
+SHC = "c" * 40
+
+
+def git_rc(repo, *args):
+    """A git command that may fail (a rebase or a merge that stops)."""
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                           "-c", "commit.gpgsign=false", *args], capture_output=True, text=True, check=False,
+                          timeout=60).returncode
+
+
+def write(repo, text, name="CHANGELOG.md"):
+    (repo / name).parent.mkdir(parents=True, exist_ok=True)
+    (repo / name).write_text(text)
+    git(repo, "add", name)
+
+
+def commit(repo, text, message, name="CHANGELOG.md"):
+    write(repo, text, name)
+    git(repo, "commit", "-q", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def train(tmp_path):
+    """main before the release holds H in [Unreleased]; `car` forks there and
+    adds D; main then releases 0.5.254 (H moves into it) and origin/main
+    follows; `train` forks from the release. No tag exists."""
+    root = tmp_path / "t"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "x").write_text("0\n")
+    git(root, "add", "x")
+    commit(root, log(sections(Added=H), released=OLD), "before the release")
+    git(root, "switch", "-q", "-c", "car")
+    (root / "x").write_text("car\n")
+    git(root, "add", "x")
+    commit(root, log(sections(Added=H + D), released=OLD), "car: D")
+    git(root, "switch", "-q", "main")
+    (root / "x").write_text("main\n")
+    git(root, "add", "x")
+    commit(root, log("", released=RELEASED), "release 0.5.254")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "switch", "-q", "-c", "train")
+    return root
+
+
+def merge_car(repo, into="train", detach=False):
+    """Open a merge of `car` into `into` that leaves the index as HEAD has it
+    (`-s ours`), so a test writes the merge result it wants."""
+    git(repo, "switch", "-q", *(["--detach"] if detach else []), into)
+    git(repo, "merge", "-q", "-s", "ours", "--no-commit", "car")
+    assert git(repo, "rev-parse", "MERGE_HEAD") == git(repo, "rev-parse", "car")
+
+
+# The pure choice of bases.
+
+
+def test_success_an_ordinary_commit_judges_its_released_part_by_the_merge_base_and_head():
+    base, how, released = cm.choose_bases("", "", SHB, SHA)
+    assert base == SHA and "merge base" in how
+    assert [sha for sha, _ in released] == [SHA, SHB]
+
+
+def test_success_an_open_merge_judges_its_released_part_by_both_parents_and_the_merge_base():
+    base, how, released = cm.choose_bases("", SHC, SHB, SHA)
+    assert base == SHC and "MERGE_HEAD" in how
+    assert [sha for sha, _ in released] == [SHC, SHB, SHA]
+
+
+def test_success_each_released_base_says_how_it_was_chosen():
+    _, _, released = cm.choose_bases("", SHC, SHB, SHA)
+    hows = [how for _, how in released]
+    assert "MERGE_HEAD" in hows[0] and "HEAD" in hows[1] and "origin/main" in hows[2]
+
+
+def test_success_an_explicit_base_is_the_only_base():
+    base, how, released = cm.choose_bases(SHA, SHC, SHB, SHA)
+    assert base == SHA and how == "--base" and released == [(SHA, "--base")]
+
+
+def test_edge_head_equal_to_the_merge_base_is_one_base():
+    _, _, released = cm.choose_bases("", "", SHA, SHA)
+    assert [sha for sha, _ in released] == [SHA]
+
+
+def test_edge_merge_head_equal_to_the_merge_base_is_one_base():
+    _, _, released = cm.choose_bases("", SHA, SHB, SHA)
+    assert [sha for sha, _ in released] == [SHA, SHB]
+
+
+def test_edge_an_unborn_head_is_not_a_base():
+    _, _, released = cm.choose_bases("", "", "", SHA)
+    assert [sha for sha, _ in released] == [SHA]
+
+
+def test_failure_no_merge_and_no_merge_base_is_no_base_even_with_a_head():
+    base, how, released = cm.choose_bases("", "", SHB, "")
+    assert base is None and "origin/main" in how and released == []
+
+
+def test_edge_a_merge_without_origin_main_still_judges_by_both_parents():
+    base, _, released = cm.choose_bases("", SHC, SHB, "")
+    assert base == SHC and [sha for sha, _ in released] == [SHC, SHB]
+
+
+# The pure check with several released bases.
+
+
+def test_failure_an_entry_inside_a_release_only_head_holds_is_refused():
+    found = cm.check(BAD_MERGE, log(sections(Added=H + D), released=OLD),
+                     others=[("HEAD", log("", released=RELEASED), "")])
+    assert len(found) == 1 and found[0].startswith("against HEAD:") and LEAD_D[:30] in found[0]
+
+
+def test_success_the_same_entry_in_unreleased_passes_against_both():
+    assert cm.check(GOOD_MERGE, log(sections(Added=H + D), released=OLD),
+                    others=[("HEAD", log("", released=RELEASED), "")]) == []
+
+
+def test_success_a_base_with_no_changelog_holds_nothing_released():
+    assert cm.check(GOOD_MERGE, GOOD_MERGE, others=[("HEAD", None, "")]) == []
+
+
+def test_failure_each_base_that_disagrees_is_its_own_problem():
+    found = cm.check(BAD_MERGE, log(sections(Added=H + D), released=OLD),
+                     others=[("HEAD", log("", released=RELEASED), ""), ("main", log("", released=RELEASED), "")])
+    assert [p.split(":")[0] for p in found] == ["against HEAD", "against main"]
+
+
+def test_success_a_rewrite_on_purpose_passes_every_base_with_another_pin():
+    rewritten = RELEASED.replace("it ended.", "it ended early.")
+    ours = log("", released=rewritten)
+    assert cm.check(ours, log("", released=RELEASED), sha(rewritten), "",
+                    others=[("HEAD", log("", released=RELEASED), "")]) == []
+
+
+def test_failure_a_pin_that_head_already_had_does_not_excuse_a_change_against_head():
+    rewritten = RELEASED.replace("it ended.", "it ended early.")
+    ours = log("", released=rewritten)
+    found = cm.check(ours, ours, sha(rewritten), sha(rewritten),
+                     others=[("HEAD", log("", released=RELEASED), sha(rewritten))])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+def test_edge_without_other_bases_the_check_is_as_before():
+    assert cm.check(BAD_MERGE, log(sections(Added=H + D), released=OLD)) == []
+
+
+# Against real repositories: the cases the brief names.
+
+
+def test_failure_a_merge_of_an_old_car_into_a_train_that_puts_its_entry_under_a_release_is_refused(train, capsys):
+    merge_car(train)
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+    err = capsys.readouterr().err
+    assert "HEAD" in err and LEAD_D[:30] in err
+
+
+def test_success_a_merge_of_an_old_car_into_a_train_that_keeps_its_entry_unreleased_passes(train, capsys):
+    merge_car(train)
+    write(train, GOOD_MERGE)
+    assert run(train) == 0 and "the CHANGELOG is as the base" in capsys.readouterr().out
+
+
+def test_failure_the_message_names_the_first_parent_it_compared(train, capsys):
+    merge_car(train)
+    write(train, BAD_MERGE)
+    head = git(train, "rev-parse", "HEAD")
+    assert run(train) == 1 and head[:12] in capsys.readouterr().err
+
+
+def test_success_the_pass_message_names_every_base_it_compared(train, capsys):
+    merge_car(train)
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+    out = capsys.readouterr().out
+    for ref in ("car", "HEAD"):
+        assert git(train, "rev-parse", ref)[:12] in out
+
+
+def test_failure_the_bad_merge_fails_even_when_origin_main_is_not_fetched(train):
+    merge_car(train)
+    write(train, BAD_MERGE)
+    git(train, "update-ref", "-d", "refs/remotes/origin/main")
+    assert run(train) == 1
+
+
+def test_failure_the_bad_merge_fails_on_a_detached_head(train):
+    merge_car(train, detach=True)
+    write(train, BAD_MERGE)
+    assert git_rc(train, "symbolic-ref", "-q", "HEAD") != 0
+    assert run(train) == 1
+
+
+def test_success_the_good_merge_passes_on_a_detached_head(train):
+    merge_car(train, detach=True)
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+
+
+def test_failure_ci_refuses_the_bad_merge_once_it_is_committed(train):
+    # CI runs the script with no --base outside a merge: the base is the
+    # merge base with origin/main, which holds the release.
+    merge_car(train)
+    write(train, BAD_MERGE)
+    git(train, "commit", "-q", "-m", "merge car")
+    assert run(train) == 1
+
+
+def test_failure_ci_refuses_it_by_the_merge_base_alone(train):
+    merge_car(train)
+    write(train, BAD_MERGE)
+    git(train, "commit", "-q", "-m", "merge car")
+    assert run(train, "--base", git(train, "merge-base", "HEAD", "origin/main")) == 1
+
+
+def test_success_ci_passes_the_good_merge_once_it_is_committed(train):
+    merge_car(train)
+    write(train, GOOD_MERGE)
+    git(train, "commit", "-q", "-m", "merge car")
+    assert run(train) == 0
+
+
+def test_edge_an_explicit_base_of_the_old_car_still_passes_the_bad_merge(train):
+    # --base names the one base to compare with: the caller chose it.
+    merge_car(train)
+    write(train, BAD_MERGE)
+    assert run(train, "--base", "car") == 0
+
+
+def test_failure_a_car_that_holds_the_release_merged_into_an_older_train_is_refused(train):
+    # The other way round: the train forked before the release, the car merged
+    # main, and the merge puts the train's entry inside the release.
+    git(train, "switch", "-q", "car")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    write(train, log(sections(Added=D), released=RELEASED))
+    git(train, "commit", "-q", "-m", "car merges main")
+    git(train, "switch", "-q", "-c", "old-train", "car~1")
+    commit(train, log(sections(Added=H, Fixed=B), released=OLD), "old train: B")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "car")
+    write(train, log(sections(Added=D), released=NEW_SECTION.replace("### Added\n\n", "### Added\n\n" + B) + OLD))
+    assert run(train) == 1
+
+
+def test_success_a_merge_of_main_into_an_old_branch_that_keeps_its_entry_unreleased_passes(train):
+    git(train, "switch", "-q", "car")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+
+
+def test_failure_a_merge_of_main_into_an_old_branch_that_puts_its_entry_under_the_release_is_refused(train):
+    git(train, "switch", "-q", "car")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_failure_a_merge_of_main_that_drops_an_old_release_is_refused(train):
+    git(train, "switch", "-q", "car")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    write(train, log(sections(Added=D), released=NEW_SECTION))
+    assert run(train) == 1
+
+
+def test_success_an_ordinary_commit_on_a_branch_behind_main_passes(train):
+    # car does not hold the release; its own released part judges it.
+    git(train, "switch", "-q", "car")
+    write(train, log(sections(Added=H + D + C), released=OLD))
+    assert run(train) == 0
+
+
+def test_failure_an_ordinary_commit_that_edits_a_release_head_holds_is_refused(train):
+    write(train, log(sections(Added=D), released=RELEASED.replace("smaller files", "small files")))
+    assert run(train) == 1
+
+
+def test_failure_an_ordinary_commit_that_moves_its_entry_into_a_release_is_refused(train):
+    commit(train, log(sections(Added=D), released=RELEASED), "train: D")
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_success_an_ordinary_commit_that_adds_an_entry_on_the_train_passes(train):
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+
+
+def test_success_a_release_commit_on_the_train_passes(train):
+    commit(train, GOOD_MERGE, "train: D")
+    write(train, log("", released="## [0.5.255] - 2026-11-15\n\n### Added\n\n" + D + "\n" + RELEASED))
+    assert run(train) == 0
+
+
+def test_failure_a_rebase_that_puts_the_entry_under_the_release_is_refused(train):
+    git(train, "switch", "-q", "car")
+    assert git_rc(train, "rebase", "-q", "train") != 0, "the rebase was meant to stop on x"
+    assert git_rc(train, "rev-parse", "-q", "--verify", "REBASE_HEAD") == 0
+    write(train, "car\n", name="x")
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_success_a_rebase_that_keeps_the_entry_unreleased_passes(train):
+    git(train, "switch", "-q", "car")
+    assert git_rc(train, "rebase", "-q", "train") != 0, "the rebase was meant to stop on x"
+    write(train, "car\n", name="x")
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+
+
+def test_failure_a_rebase_onto_a_train_ahead_of_a_stale_origin_main_is_refused(train):
+    # origin/main still at the commit before the release: only HEAD (the
+    # train being replayed onto) holds it.
+    git(train, "update-ref", "refs/remotes/origin/main", "main~1")
+    git(train, "switch", "-q", "car")
+    assert git_rc(train, "rebase", "-q", "train") != 0, "the rebase was meant to stop on x"
+    write(train, "car\n", name="x")
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_failure_a_cherry_pick_that_puts_the_entry_under_the_release_is_refused(train):
+    git(train, "update-ref", "refs/remotes/origin/main", "main~1")
+    assert git_rc(train, "cherry-pick", "car") != 0, "the cherry-pick was meant to stop on x"
+    write(train, "car\n", name="x")
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_success_with_no_tag_the_gate_still_judges_by_the_commits(train):
+    assert git(train, "tag", "--list") == ""
+    merge_car(train)
+    write(train, GOOD_MERGE)
+    assert run(train) == 0
+
+
+def test_failure_with_no_tag_the_bad_merge_is_still_refused(train):
+    assert git(train, "tag", "--list") == ""
+    merge_car(train)
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_edge_a_tag_on_an_old_commit_does_not_change_the_result(train):
+    git(train, "tag", "v0.5.253", "main~1")
+    merge_car(train)
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+
+
+def test_edge_a_head_without_a_changelog_holds_nothing_released(tmp_path):
+    # main has no CHANGELOG yet; a branch that adds one is merged into it.
+    root = tmp_path / "n"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "x").write_text("0\n")
+    git(root, "add", "x")
+    git(root, "commit", "-q", "-m", "no changelog yet")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "switch", "-q", "-c", "b")
+    commit(root, GOOD_MERGE, "b: the changelog")
+    git(root, "switch", "-q", "main")
+    git(root, "merge", "-q", "-s", "ours", "--no-commit", "b")
+    write(root, GOOD_MERGE)
+    assert cm.main(["--repo", str(root)]) == 0
+
+
+def test_failure_a_base_named_by_the_choice_that_has_no_changelog_is_still_exit_2(tmp_path):
+    root = tmp_path / "m"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "x").write_text("0\n")
+    git(root, "add", "x")
+    git(root, "commit", "-q", "-m", "no changelog yet")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    write(root, GOOD_MERGE)
+    assert cm.main(["--repo", str(root)]) == 2
+
+
+def test_edge_a_changelog_with_no_released_section_yet_passes_any_merge(tmp_path):
+    root = tmp_path / "u"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    commit(root, f"{HEAD}## [Unreleased]\n\n### Added\n\n{H}", "first")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "switch", "-q", "-c", "b")
+    commit(root, f"{HEAD}## [Unreleased]\n\n### Added\n\n{H}{D}", "b: D")
+    git(root, "switch", "-q", "main")
+    git(root, "merge", "-q", "-s", "ours", "--no-commit", "b")
+    write(root, f"{HEAD}## [Unreleased]\n\n### Added\n\n{H}{D}")
+    assert cm.main(["--repo", str(root)]) == 0
+
+
+def test_edge_a_merge_that_brings_mains_rewrite_on_purpose_passes_against_the_older_head(train):
+    rewritten = RELEASED.replace("it ended.", "it ended early.")
+    git(train, "switch", "-q", "main")
+    write(train, sha(rewritten) + "\n", name=".config/changelog-released.sha256")
+    commit(train, log("", released=rewritten), "rewrite on purpose")
+    git(train, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(train, "switch", "-q", "train")
+    git(train, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    write(train, sha(rewritten) + "\n", name=".config/changelog-released.sha256")
+    write(train, log("", released=rewritten))
+    assert run(train) == 0
+
+
+def test_edge_a_problem_against_head_says_which_commit_and_why(train, capsys):
+    merge_car(train)
+    write(train, BAD_MERGE)
+    assert run(train) == 1
+    err = capsys.readouterr().err
+    assert f"against {git(train, 'rev-parse', 'HEAD')[:12]} ({cm.ON_TOP_OF}):" in err
+
+
+def test_success_a_merge_into_a_train_that_rewrote_a_release_on_purpose_passes(train):
+    rewritten = RELEASED.replace("it ended.", "it ended early.")
+    write(train, sha(rewritten) + "\n", name=".config/changelog-released.sha256")
+    commit(train, log("", released=rewritten), "train: rewrite on purpose")
+    merge_car(train)
+    write(train, log(sections(Added=D), released=rewritten))
+    assert run(train) == 0
+
+
+def test_failure_a_merge_that_puts_the_entry_into_the_oldest_release_is_refused(train):
+    merge_car(train)
+    write(train, log("", released=NEW_SECTION + OLD.replace("### Fixed\n\n", "### Fixed\n\n" + D)))
+    assert run(train) == 1
+
+
+def test_edge_an_index_without_a_changelog_is_exit_2_during_a_merge(train, capsys):
+    merge_car(train)
+    git(train, "rm", "-q", "--cached", "CHANGELOG.md")
+    assert run(train) == 2 and "the index" in capsys.readouterr().err
+
+
+def test_edge_the_hook_still_calls_the_gate_without_a_base():
+    # The fix is in the script's choice of bases, so the hook and CI keep
+    # their one command.
+    assert "elif CHANGELOG_OUT=$(" + COMMAND + " 2>&1); then" in hook_step()
+    assert ci_step().rstrip().endswith("run: " + COMMAND)
+
+
+def test_edge_the_docstring_states_the_released_rule_for_every_parent():
+    doc = cm.__doc__
+    assert "HEAD" in doc and "MERGE_HEAD" in doc and "every" in doc
+
+
+# ── A rewrite of released sections on purpose, merged across ──────────────
+#
+# On 2026-11-25 main d023f4815 rewrote the released sections 0.5.214 to
+# 0.5.190 as outlines and moved the pin; the 0.5.273 release then added a
+# section on top. Every commit forked before d023f4815 holds the old text, so
+# with the rule "the released part of every parent is the end of ours" a
+# merge of main into such a branch was refused (HEAD's and the merge base's
+# released part is not the end of main's), and so was a merge of such a car
+# into a train that holds the rewrite (the car's is not the end of the
+# train's). Only a hand edit of the pin got past it.
+#
+# The pin is the authority. The pin file's history on main is a chain: each
+# commit that rewrote released sections on purpose wrote a new sha256, and
+# every later commit holds that value until the next rewrite. So a parent's
+# released part does not judge the result when the pin of the index is not
+# that parent's pin, another parent holds the pin of the index, that parent's
+# released part is the end of ours, and that parent's history holds the
+# first parent's pin (it moved past it). An [Unreleased] entry moved into a
+# released section is still refused: the parent holding the newest pin
+# judges it.
+
+OLD_R = "## [0.5.253] - 2026-11-13\n\n### Fixed\n\n- **A drain no longer ends on a signal.**\n  - Was: it ended early.\n"
+OLD_R2 = OLD_R.replace("it ended early.", "the drain ended at once.")
+REL_NEW = NEW_SECTION + OLD_R
+GOOD_ACROSS = log(sections(Added=D), released=REL_NEW)
+BAD_INTO_RELEASE = log("", released=NEW_SECTION.replace("### Added\n\n", "### Added\n\n" + D) + OLD_R)
+BAD_INTO_REWRITTEN = log("", released=NEW_SECTION + OLD_R.replace("### Fixed\n\n", "### Fixed\n\n" + D))
+PIN_FILE = ".config/changelog-released.sha256"
+P0, P1, P2 = sha(OLD), sha(OLD_R), sha(OLD_R2)
+
+
+def set_pin(repo, value):
+    write(repo, f"# The sha256 of the released part.\n{value}\n", name=PIN_FILE)
+
+
+@pytest.fixture
+def rewrite(tmp_path):
+    """main: a commit without a pin file; a commit that adds the pin P0 of OLD;
+    `old` forks there and adds D; `side` forks there and changes only x;
+    main rewrites OLD as OLD_R (pin P1) and releases 0.5.254 on top (H moves
+    into it; the pin stays P1); origin/main follows; `train` forks from it."""
+    root = tmp_path / "w"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "x").write_text("0\n")
+    (root / "y").write_text("0\n")
+    git(root, "add", "x", "y")
+    commit(root, log(sections(Added=H), released=OLD), "before the pin file")
+    set_pin(root, P0)
+    git(root, "commit", "-q", "-m", "the pin file")
+    git(root, "switch", "-q", "-c", "old")
+    # y differs on `old` and on main, so a rebase of `old` stops.
+    (root / "y").write_text("old\n")
+    git(root, "add", "y")
+    commit(root, log(sections(Added=H + D), released=OLD), "old: D")
+    git(root, "switch", "-q", "-c", "side", "main")
+    (root / "x").write_text("side\n")
+    git(root, "add", "x")
+    git(root, "commit", "-q", "-m", "side: x")
+    git(root, "switch", "-q", "main")
+    (root / "y").write_text("main\n")
+    git(root, "add", "y")
+    set_pin(root, P1)
+    commit(root, log(sections(Added=H), released=OLD_R), "rewrite OLD on purpose")
+    commit(root, log("", released=REL_NEW), "release 0.5.254")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "switch", "-q", "-c", "train")
+    return root
+
+
+def merge(repo, branch, into, detach=False):
+    """Open a merge of `branch` into `into` that leaves the index as HEAD has
+    it (`-s ours`), so a test writes the result it wants."""
+    git(repo, "switch", "-q", *(["--detach"] if detach else []), into)
+    git(repo, "merge", "-q", "-s", "ours", "--no-commit", branch)
+
+
+def index_pin(repo):
+    return cm.pin_of(git(repo, "show", f":{PIN_FILE}"))
+
+
+def rel(label, released, pin, history=()):
+    return cm.Released(label, released, pin, frozenset(history))
+
+
+# Success.
+
+
+def test_success_a_real_merge_of_main_after_the_rewrite_into_an_older_branch_passes_with_no_pin_edit(rewrite):
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert index_pin(rewrite) == P1, "git takes main's pin: only main moved it"
+    assert run(rewrite) == 0
+
+
+def test_success_main_after_the_rewrite_merged_into_a_branch_with_an_entry_passes(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_a_car_from_before_the_rewrite_merged_into_the_train_passes(rewrite):
+    merge(rewrite, "old", "train")
+    write(rewrite, GOOD_ACROSS)
+    assert index_pin(rewrite) == P1 and run(rewrite) == 0
+
+
+def test_success_the_car_merge_passes_with_origin_main_from_before_the_rewrite(rewrite):
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "old~1")
+    merge(rewrite, "old", "train")
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_the_car_merge_passes_on_a_detached_head(rewrite):
+    merge(rewrite, "old", "train", detach=True)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_ci_passes_the_merge_of_main_once_it_is_committed(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    assert run(rewrite) == 0
+
+
+def test_success_a_second_release_on_top_of_the_rewrite_still_passes(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    commit(rewrite, log("", released="## [0.5.255] - 2026-11-15\n\n### Added\n\n" + C + "\n" + REL_NEW), "0.5.255")
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert run(rewrite) == 0
+
+
+def test_success_a_branch_from_before_two_rewrites_takes_main_after_both(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    set_pin(rewrite, P2)
+    commit(rewrite, log("", released=NEW_SECTION + OLD_R2), "a second rewrite")
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert index_pin(rewrite) == P2 and run(rewrite) == 0
+
+
+def test_success_the_train_takes_a_second_rewrite_of_main(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    set_pin(rewrite, P2)
+    commit(rewrite, log("", released=NEW_SECTION + OLD_R2), "a second rewrite")
+    git(rewrite, "switch", "-q", "train")
+    commit(rewrite, GOOD_ACROSS, "train: D")
+    git(rewrite, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    set_pin(rewrite, P2)
+    write(rewrite, log(sections(Added=D), released=NEW_SECTION + OLD_R2))
+    assert run(rewrite) == 0
+
+
+def test_success_an_ordinary_commit_after_the_merge_of_main_passes(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    write(rewrite, log(sections(Added=D + C), released=REL_NEW))
+    assert run(rewrite) == 0
+
+
+def test_success_a_rebase_of_an_old_branch_across_the_rewrite_passes(rewrite):
+    git(rewrite, "switch", "-q", "old")
+    assert git_rc(rewrite, "rebase", "-q", "main") != 0, "the rebase was meant to stop on y"
+    write(rewrite, "old\n", name="y")
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_the_pure_rule_excuses_an_older_pin_that_the_newer_parents_history_holds():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P0, P1, ""})])
+    assert found == []
+
+
+def test_success_a_merge_of_two_rewrites_that_writes_a_new_pin_passes():
+    merged = NEW_SECTION + OLD_R2 + "\n"
+    found = cm.released_problems(merged, sha(merged), [rel("HEAD", NEW_SECTION + OLD_R, P1, {P0, P1}),
+                                                       rel("car", OLD_R2, P2, {P0, P2})])
+    assert found == []
+
+
+# Failure.
+
+
+def test_failure_main_merged_into_an_old_branch_with_the_entry_inside_the_release_is_refused(rewrite, capsys):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1 and LEAD_D[:30] in capsys.readouterr().err
+
+
+def test_failure_main_merged_into_an_old_branch_with_the_entry_inside_the_rewritten_section_is_refused(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_REWRITTEN)
+    assert run(rewrite) == 1
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_release_is_refused(rewrite, capsys):
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1 and LEAD_D[:30] in capsys.readouterr().err
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_rewritten_section_is_refused(rewrite):
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_REWRITTEN)
+    assert run(rewrite) == 1
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_release_and_a_stale_origin_main_is_refused(rewrite):
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "old~1")
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1
+
+
+def test_failure_ci_refuses_the_bad_merge_of_main_once_it_is_committed(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_RELEASE)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    assert run(rewrite) == 1
+
+
+def test_failure_a_rebase_across_the_rewrite_with_the_entry_inside_the_release_is_refused(rewrite):
+    git(rewrite, "switch", "-q", "old")
+    assert git_rc(rewrite, "rebase", "-q", "main") != 0, "the rebase was meant to stop on y"
+    write(rewrite, "old\n", name="y")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1
+
+
+def test_failure_a_merge_of_main_that_keeps_the_branchs_older_pin_is_refused_and_names_the_newer(rewrite, capsys):
+    merge(rewrite, "main", "old")
+    write(rewrite, GOOD_ACROSS)
+    assert index_pin(rewrite) == P0
+    assert run(rewrite) == 1 and P1 in capsys.readouterr().err
+
+
+def test_failure_a_merge_of_main_that_keeps_the_old_released_text_is_refused(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, log(sections(Added=D), released=NEW_SECTION + OLD))
+    assert run(rewrite) == 1
+
+
+def test_failure_a_changed_byte_that_no_parent_shows_is_refused_under_the_newer_pin(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, log(sections(Added=D), released=REL_NEW.replace("smaller files", "small files")))
+    assert run(rewrite) == 1
+
+
+def test_failure_a_pin_no_parent_holds_does_not_excuse_a_change(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, "f" * 64)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 1
+
+
+def test_failure_two_rewrites_from_one_pin_merged_without_a_new_pin_are_refused():
+    found = cm.released_problems(NEW_SECTION + OLD_R, P1, [rel("HEAD", NEW_SECTION + OLD_R, P1, {P0, P1}),
+                                                           rel("car", OLD_R2, P2, {P0, P2})])
+    assert len(found) == 1 and found[0].startswith("against car:")
+
+
+def test_failure_a_newer_pin_does_not_excuse_when_its_parent_does_not_judge_the_result():
+    # main holds the newer pin, but the result is not main's released part:
+    # no parent excuses the other, so both are problems.
+    ours = NEW_SECTION.replace("### Added\n\n", "### Added\n\n" + D) + OLD_R
+    found = cm.released_problems(ours, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P0, P1})])
+    assert [p.split(":")[0] for p in found] == ["against HEAD", "against main"]
+
+
+def test_failure_two_commits_with_the_pin_of_the_index_do_not_excuse_each_other():
+    # Same pin, different released text: one of them changed released text
+    # without moving the pin, which nothing replaces.
+    changed = REL_NEW.replace("smaller files", "small files")
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", REL_NEW, P1, {P0, P1}),
+                                               rel("main", changed, P1, {P0, P1})])
+    assert len(found) == 1 and found[0].startswith("against main:")
+
+
+def test_failure_a_newer_pin_whose_parent_never_held_the_older_one_does_not_excuse_it():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P1})])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+# Edge.
+
+
+def test_edge_the_pin_history_of_a_commit_holds_every_pin_it_moved_past_and_no_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "main")) == {"", P0, P1}
+
+
+def test_edge_the_pin_history_of_an_old_branch_does_not_hold_the_newer_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "old")) == {"", P0}
+
+
+def test_edge_the_pin_history_of_a_commit_before_the_pin_file_is_no_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "old~2")) == {""}
+
+
+def test_edge_the_pin_history_follows_a_side_branch_that_moved_the_pin(rewrite):
+    git(rewrite, "switch", "-q", "-c", "outline", "old~1")
+    set_pin(rewrite, P2)
+    commit(rewrite, log(sections(Added=H), released=OLD_R2), "side rewrite")
+    git(rewrite, "switch", "-q", "main")
+    git(rewrite, "merge", "-q", "-s", "ours", "--no-edit", "outline")
+    assert P2 in cm.pin_history(rewrite, git(rewrite, "rev-parse", "main"))
+
+
+def test_edge_the_pin_history_of_a_commit_that_does_not_exist_is_empty(rewrite):
+    assert cm.pin_history(rewrite, "0" * 40) == frozenset()
+
+
+def test_edge_a_parent_with_the_index_pin_is_judged_strictly():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD_R, P1, {P0, P1}),
+                                               rel("main", REL_NEW, P1, {P0, P1})])
+    assert found == []
+    found = cm.released_problems(NEW_SECTION + OLD, P1, [rel("main", REL_NEW, P1, {P0, P1})])
+    assert len(found) == 1
+
+
+def test_edge_an_index_without_a_pin_excuses_no_parent():
+    found = cm.released_problems(REL_NEW, "", [rel("HEAD", OLD, P0), rel("main", REL_NEW, "", {""})])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+def test_edge_a_parent_without_a_changelog_needs_no_excuse():
+    assert cm.released_problems(REL_NEW, P1, [rel("HEAD", None, ""), rel("main", REL_NEW, P1, {P1})]) == []
+
+
+def test_edge_a_pin_file_with_only_comments_is_no_pin_and_its_history_is_no_pin(rewrite):
+    git(rewrite, "switch", "-q", "-c", "blank", "old~2")
+    write(rewrite, "# no pin yet\n", name=PIN_FILE)
+    git(rewrite, "commit", "-q", "-m", "comment only")
+    assert index_pin(rewrite) == "" and cm.pin_history(rewrite, git(rewrite, "rev-parse", "HEAD")) == {""}
+
+
+def test_edge_an_explicit_base_from_before_the_rewrite_is_still_the_one_base(rewrite):
+    # --base names the one commit to compare with; no other parent excuses it.
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite, "--base", "old") == 1 and run(rewrite, "--base", "main") == 0
+
+
+def test_edge_the_check_keeps_its_three_field_others(rewrite):
+    # A caller that passes (label, text, pin) without a history is judged
+    # strictly, as before.
+    found = cm.check(GOOD_ACROSS, GOOD_ACROSS, P1, P1, others=[("HEAD", log("", released=OLD), P0)])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+def test_edge_the_base_is_excused_by_a_newer_parent_like_any_other(rewrite):
+    found = cm.check(GOOD_ACROSS, log(sections(Added=H + D), released=OLD), P1, P0,
+                     others=[("HEAD", log("", released=REL_NEW), P1, {"", P0, P1})])
+    assert found == []
+
+
+def test_edge_the_docstring_states_that_the_pin_is_the_authority():
+    doc = cm.__doc__
+    assert "newest pin" in doc and "history" in doc and "d023f4815" in doc

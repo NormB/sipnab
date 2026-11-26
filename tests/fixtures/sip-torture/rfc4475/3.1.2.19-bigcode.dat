@@ -1,0 +1,9 @@
+SIP/2.0 70000 way out of range
+Via: SIP/2.0/UDP 192.0.2.139;branch=z9hG4bKbc39
+Call-ID: bigcode.c1v2b3
+CSeq: 39 INVITE
+From: <sip:front@example.net>;tag=bc39a
+To: <sip:desk@example.org>;tag=bc39b
+Contact: <sip:desk@192.0.2.139>
+Content-Length: 0
+

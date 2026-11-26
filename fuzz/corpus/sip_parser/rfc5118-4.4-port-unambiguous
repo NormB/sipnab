@@ -1,0 +1,10 @@
+REGISTER sip:[2001:db8::42]:5070 SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1];branch=z9hG4bKv6-unamb44
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:front@example.org;tag=v6t
+Contact: "Front" <sip:front@[2001:db8::a2]>
+Call-ID: unamb44.p1a2s3
+CSeq: 44 REGISTER
+Content-Length: 0
+

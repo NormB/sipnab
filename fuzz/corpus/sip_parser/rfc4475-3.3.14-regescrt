@@ -1,0 +1,10 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.154;branch=z9hG4bKre54
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:desk@example.org;tag=re54
+Call-ID: regescrt.o1p2a3@192.0.2.154
+CSeq: 54 REGISTER
+M: <sip:desk@example.org?Subject=front%20desk>
+L:0
+

@@ -1,0 +1,12 @@
+OPTIONS sip:svc;key=v%40example.org@example.net SIP/2.0
+Via: SIP/2.0/UDP 198.51.100.9;branch=z9hG4bKsemi9
+Max-Forwards: 9
+To: sip:svc@example.net
+From: sip:front@example.org;tag=se9
+Call-ID: semiuri.u7y6t5
+CSeq: 29 OPTIONS
+Accept: application/sdp,
+   message/sipfrag, multipart/mixed,
+   text/plain
+l: 0
+

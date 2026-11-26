@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.274" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.275" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -162,6 +162,9 @@ Split output files (e.g., "filesize:50" for 50 MiB chunks).
 .TP
 \fB\-\-split\-keep\fR \fIN\fR
 Keep only the newest N split files: sipnab DELETES the older ones as rotation creates new ones. Turns \fB\-O\fR into a ring buffer.
+.TP
+\fB\-\-min\-free\-disk\fR \fISIZE\fR
+Stop the capture when free disk space under an output falls below SIZE (e.g. "2G", "500M"; binary units, 1G = 1024 MiB).
 .TP
 \fB\-\-replay\fR
 Replay packets from a pcap file at original timing.
@@ -1546,6 +1549,9 @@ A check failed \(em the tool worked and the input failed a check you asked for. 
 .TP
 .B 101
 Internal failure \(em sipnab panicked. Its panic hook writes a crash report and ends the process with \fB101\fR. With \fB[crash] core = true\fR it aborts instead, so the kernel can write a core dump, and the shell reports the signal (\fB134\fR for \fBSIGABRT\fR).
+.TP
+.B 4
+Stopped for disk space: the free space under an output fell below \fB\-\-min\-free\-disk\fR. The last stderr line names the directory, its free bytes and the floor. Below the floor before the capture opened, the run did not start. A run that would have exited non\-zero for its own reason keeps that code. See Stop a capture before the disk fills.
 .TP
 .B 129
 Stopped by \fBSIGHUP\fR, or the terminal of a terminal interface run went away. sipnab stops as it does for \fBSIGTERM\fR, which exits \fB0\fR like \fBSIGINT\fR, and exits \fB129\fR instead, so a supervisor that restarts on failure restarts it. A run that would have exited non\-zero keeps that code.

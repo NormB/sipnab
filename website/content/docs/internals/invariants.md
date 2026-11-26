@@ -320,6 +320,8 @@ Other stores:
   and per-stream buffered bytes in [`reassembly.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/reassembly.rs).
 - The packet processor remembers at most `MAX_RESYNCED_STREAMS` (1024) TCP directions
   that resumed behind a gap, between two reads by the TLS layer. The oldest goes first.
+- Heuristic RTP discovery tracks at most `MAX_CANDIDATES` (8192) source and destination
+  pairs. A new pair past that drops an arbitrary one, so spoofed pairs cannot grow it.
 
 An archive named with `-I` is attacker-shaped input of the same kind.
 Its walk in [`archive`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/mod.rs) stops rather than evicts:

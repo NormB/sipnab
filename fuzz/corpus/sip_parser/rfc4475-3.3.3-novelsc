@@ -1,0 +1,9 @@
+OPTIONS im:desk@example.org SIP/2.0
+Via: SIP/2.0/TCP 192.0.2.143;branch=z9hG4bKnv43
+Max-Forwards: 43
+To: sip:desk@example.org
+From: sip:front@example.net;tag=nv43
+Call-ID: novelsc.t1y2u3
+CSeq: 43 OPTIONS
+Content-Length: 0
+

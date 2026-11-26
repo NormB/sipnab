@@ -1,0 +1,9 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.137;branch=z9hG4bKmm37
+Max-Forwards: 37
+To: sip:desk@example.org
+From: sip:front@example.net;tag=mm37
+Call-ID: mismatch01.h4j5k6
+CSeq: 37 INVITE
+l: 0
+

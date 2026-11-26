@@ -1284,7 +1284,7 @@ What happens when sipnab panics. The panic hook:
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `$STATE_DIRECTORY` (the first entry), else `~/.local/state/sipnab` | Directory crash reports land in. systemd sets `$STATE_DIRECTORY` for a unit with `StateDirectory=`, so under the packaged unit the default is `/var/lib/sipnab`. sipnab writes one file per crash, named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). An empty string fails validation and names the key |
+| `report_dir` | string | `$STATE_DIRECTORY` (the first entry), else `~/.local/state/sipnab` | Directory crash reports land in. systemd sets `$STATE_DIRECTORY` for a unit with `StateDirectory=`, so under the packaged unit the default is `/var/lib/sipnab`. sipnab writes one file per crash, named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). After each report it removes its own older reports so the newest 20 remain. An empty string fails validation and names the key |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml

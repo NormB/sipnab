@@ -261,6 +261,51 @@ whatever its first bytes:
 `schema_version` increments on breaking field changes. Pin your consumers to
 it.
 
+### Notice when sipnab cannot write the NDJSON file
+
+A run such as `sipnab -N -d any --json > sip.ndjson` writes its lines to
+standard output. When that file's disk fills, the writes fail. sipnab prints
+one line on standard error at the first failed write, while the run goes on,
+and exits 1 at the end. The `-O` file, the vCon files and the reports are
+still written. A closed pipe, such as `| head`, is not counted as a failure.
+
+Prerequisites: a sipnab binary newer than 0.5.272. Nothing changes on other
+systems.
+
+Steps:
+
+1. Send standard error where you read it: the terminal, the journal under a
+   systemd unit, or a file with `2> sipnab.err`.
+2. Watch for a line that starts with `Writing standard output failed:`.
+3. When it appears, free space where standard output goes, then stop and
+   restart the run: sipnab loses the lines it writes after the failure.
+
+Verify: Linux has `/dev/full`, a device on which every write fails with "no
+space left". Send the output there:
+
+```bash
+# Run all of these, in order.
+sipnab -N --json -I tests/fixtures/sip_call.pcap > /dev/full
+echo $?
+```
+
+```text
+Writing standard output failed: No space left on device (os error 28). The run continues; its per-message output is incomplete, and it exits 1.
+Failed to write output: No space left on device (os error 28)
+1
+```
+
+Troubleshoot:
+
+- **The line appears only at the end of a short run.** sipnab buffers up to
+  64 KiB of output before it writes, so a short run's only write is at the end.
+  Pass `--line-buffer` to write each message as sipnab makes it.
+- **No line, but the file is short.** Standard output went to a pipe whose
+  reader stopped. sipnab does not count that as a failure.
+- **No line and exit 0 with standard output opened read-only.** The write
+  fails with "bad file descriptor", and Rust's standard library reports that
+  error on standard output as a successful write, so sipnab never sees it.
+
 ### Pretty-printed JSON (`--json-pretty`)
 
 `--json-pretty` emits the identical message record. It indents the record
