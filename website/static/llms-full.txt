@@ -15034,7 +15034,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.274 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.275 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -21712,7 +21712,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
-| `--min-free-disk` | `<SIZE>` | warn under 1 GiB | Unreleased | Stop the capture when the free disk space under an output falls below SIZE, such as `2G` or `500M` (binary units: `1G` is 1024 MiB; sipnab refuses a bare number other than `0`, and `MB`/`GB`). sipnab reads the free space of the directory of `-O` (every `--split` file sits beside it), `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and each vCon rule before the capture opens and every 5 seconds. Below SIZE before the capture opens, the run does not start; below it later, the run stops as `SIGTERM` stops it. Either way it exits `4`. Without the flag a directory under 1 GiB free gets one warning and the run goes on; `0` turns the check and the warning off. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
+| `--min-free-disk` | `<SIZE>` | warn under 1 GiB | 0.5.275 | Stop the capture when the free disk space under an output falls below SIZE, such as `2G` or `500M` (binary units: `1G` is 1024 MiB; sipnab refuses a bare number other than `0`, and `MB`/`GB`). sipnab reads the free space of the directory of `-O` (every `--split` file sits beside it), `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and each vCon rule before the capture opens and every 5 seconds. Below SIZE before the capture opens, the run does not start; below it later, the run stops as `SIGTERM` stops it. Either way it exits `4`. Without the flag a directory under 1 GiB free gets one warning and the run goes on; `0` turns the check and the warning off. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | 0.3.0 | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | 0.3.0 | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Unlike `sngrep` and `sipgrep`, sipnab takes no match expression here; match SIP text with `-e`. A filter typed here that does not compile says so, and sipnab refuses a lone argument that names an existing file, naming the `-I` it was missing. Config: `[capture] bpf_filter` |
@@ -39196,7 +39196,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.274 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.275 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -39898,7 +39898,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.274"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.275"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -40583,7 +40583,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.274",
+  "version": "0.5.275",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -41526,7 +41526,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.274"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.275"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -53234,7 +53234,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.274",
+  "version": "0.5.275",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
