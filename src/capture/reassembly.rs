@@ -2639,17 +2639,75 @@ mod tests {
             Ok(())
         }
 
+        /// What an untallied `finish` of a held first fragment adds to the
+        /// count of incomplete datagrams, with `between` run after the
+        /// fragment is held and before the `finish`. Read from this work's
+        /// own ledger, not the process-wide total other tests also move.
+        fn untallied_finish_adds(between: impl FnOnce()) -> Result<u64, TestError> {
+            let mut r = FragmentReassembler::new();
+            if r.insert(&first(35)).is_some() {
+                return Err("a lone first fragment should be held".into());
+            }
+            between();
+            let ((), ledger) = crate::capture::test_ledger::counting(|| {
+                crate::capture::untallied(|| r.finish());
+            });
+            Ok(ledger.of(&INCOMPLETE_IP_DATAGRAMS))
+        }
+
+        /// The same `finish` outside `untallied` is counted once in the
+        /// ledger: the check above reads a ledger that does count.
+        #[test]
+        fn a_tallied_finish_is_counted_once_in_its_ledger() -> Result<(), TestError> {
+            let mut r = FragmentReassembler::new();
+            assert!(r.insert(&first(37)).is_none(), "held");
+            let ((), ledger) = crate::capture::test_ledger::counting(|| r.finish());
+            assert_eq!(
+                ledger.of(&INCOMPLETE_IP_DATAGRAMS),
+                1,
+                "one lost datagram, counted once"
+            );
+            Ok(())
+        }
+
         #[test]
         #[serial_test::serial(undecodable_tally)]
         fn an_untallied_copy_does_not_move_the_process_wide_count() -> Result<(), TestError> {
-            let before = incomplete_ip_datagrams();
-            let mut r = FragmentReassembler::new();
-            assert!(r.insert(&first(35)).is_none(), "held");
-            crate::capture::untallied(|| r.finish());
             assert_eq!(
-                incomplete_ip_datagrams(),
-                before,
+                untallied_finish_adds(|| ())?,
+                0,
                 "a --cores worker's copy of another worker's fragment is not counted twice"
+            );
+            Ok(())
+        }
+
+        /// The check above holds while another thread counts a lost datagram
+        /// of its own between the check's two readings: the lib tests share
+        /// one process (`cargo test --lib`), and every test that finishes a
+        /// reassembler counts into the same process-wide total. The barrier
+        /// puts the other thread's count inside the window every time.
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn the_untallied_check_holds_while_another_thread_counts() -> Result<(), TestError> {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let theirs = std::sync::Arc::clone(&barrier);
+            let other = std::thread::spawn(move || {
+                theirs.wait();
+                let mut r = FragmentReassembler::new();
+                let held = r.insert(&first(36)).is_none();
+                r.finish();
+                theirs.wait();
+                held
+            });
+            let added = untallied_finish_adds(|| {
+                barrier.wait();
+                barrier.wait();
+            })?;
+            let held = other.join().map_err(|_| "the other thread panicked")?;
+            assert!(held, "the other thread's first fragment was held");
+            assert_eq!(
+                added, 0,
+                "another thread's lost datagram is not this check's count"
             );
             Ok(())
         }

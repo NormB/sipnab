@@ -63,7 +63,7 @@ AssertWithoutMessage	src/capture/libpcap.rs	15
 AssertWithoutMessage	src/capture/live.rs	51
 AssertWithoutMessage	src/capture/mapped.rs	20
 AssertWithoutMessage	src/capture/merged.rs	2
-AssertWithoutMessage	src/capture/mod.rs	78
+AssertWithoutMessage	src/capture/mod.rs	76
 AssertWithoutMessage	src/capture/native.rs	26
 AssertWithoutMessage	src/capture/next_ex.rs	6
 AssertWithoutMessage	src/capture/output_guard.rs	21
