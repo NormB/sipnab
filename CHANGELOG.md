@@ -15,6 +15,12 @@ entry that carries them.
 - **`--dialog-track branch` no longer slows down with the square of the call count.**
   - Effect: A branch-tracked run over 40,000 SIP packets runs 94% fewer instructions; the output and the exit status stay the same.
 
+### Fixed
+
+- **The plugin runtime is built with wasmi 2.0.3; crates.io yanked 2.0.2.**
+  - Was: Releases up to 0.5.277 were built with wasmi 2.0.2 and wasmi_core 2.0.2, both yanked.
+  - Effect: The 2.0.3 fix concerns wasmi's `simd` feature, which sipnab does not enable, so plugins run as before.
+
 ## [0.5.277] - 2026-11-27
 
 ### Changed

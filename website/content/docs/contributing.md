@@ -320,7 +320,7 @@ The workflow runs on `pull_request_target`.
 - A change you make to any of those three files takes effect only after it
   reaches `main`.
 
-**`pre-push`** adds seventeen hard gates. All of them mirror CI exactly. Any of
+**`pre-push`** adds eighteen hard gates. All of them mirror CI exactly. Any of
 them blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -331,6 +331,7 @@ them blocks the push:
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
 | `cd fuzz && cargo clippy --all-targets -- -D warnings` | `fuzz/` is a separate workspace that nothing else compiles or lints. |
 | `cd bpf && cargo clippy -- -D warnings` | `bpf/` is a separate workspace on the dated nightly in `bpf/rust-toolchain.toml`, which nothing else lints. |
+| `python3 scripts/deny-yanked-probe.py` | A crate's maintainers can yank a version from crates.io after it lands, on a tree that has not changed. The gate runs cargo-deny's advisories check on both lock files and proves that a yanked version fails. It runs on every push, a tag push included, and is never skipped as passed before. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
 | `cargo clippy --no-default-features --features <set> --tests -- -D warnings` for each row of `.github/feature-combos.txt` the push picks | The pre-commit hook builds only `--features full`, and `cargo check` reports a warning and passes. A binding, import or item that only code behind a feature reads is a clippy failure in CI for every set without that feature. The rows marked `hook` (`native`, the default features and the headless recipe) always run. A change behind a feature gate adds the rows with the fewest features that compile it. Any other Rust or Cargo change adds every single-feature row. The hook prints one line that says which rows and how many combinations stay in CI. `python3 scripts/check-feature-matrix.py --push-rows` reads one pre-push line on standard input and prints the rows. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
@@ -1037,7 +1038,7 @@ not a convenience.
 ### Choosing a new crate
 
 Before you add a crate, check it against these rules. `cargo deny check`
-enforces the first three. It reads [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml) and fails the pull
+enforces the first four. It reads [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml) and fails the pull
 request when a crate breaks one. The `[graph]` table of that file tells it to
 read every feature, so a crate that only an optional feature brings in gets the
 same check.
@@ -1058,6 +1059,14 @@ same check.
   - The project accepts an advisory that does not apply to sipnab only with a
     written reason, next to the entry in [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml) or
     [`osv-scanner.toml`](https://github.com/NormB/sipnab/blob/main/osv-scanner.toml).
+- **Its version is not yanked from crates.io.**
+  - `[advisories]` in [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml) sets `yanked = "deny"`.
+  - [`scripts/deny-yanked-probe.py`](https://github.com/NormB/sipnab/blob/main/scripts/deny-yanked-probe.py) checks
+    both lock files and proves that a yanked version fails. CI and the
+    pre-push hook run it.
+  - A crate's maintainers can yank a version after it lands, so a push of an
+    unchanged tree can fail here. Move off it with the `cargo update -p <crate>` that
+    cargo-deny prints.
 
 The reviewer checks the rest:
 
@@ -1116,6 +1125,7 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 cargo audit
 cargo audit --file fuzz/Cargo.lock
 cargo deny check
+python3 scripts/deny-yanked-probe.py
 python3 scripts/check-lockfile-drift.py
 ```
 

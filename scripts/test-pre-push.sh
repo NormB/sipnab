@@ -240,6 +240,11 @@ ensure_repo_shape() {
 	mkdir -p "$CRATE/scripts"
 	[ -f "$CRATE/scripts/code-scanning-clean.py" ] \
 		|| printf 'raise SystemExit(0)\n' >"$CRATE/scripts/code-scanning-clean.py"
+	# The yanked-version gate runs this script, which needs crates.io and the
+	# advisory database; its verdicts are tested in
+	# scripts/tests/test_deny_yanked_probe.py, so the fixture passes it.
+	[ -f "$CRATE/scripts/deny-yanked-probe.py" ] \
+		|| printf 'raise SystemExit(0)\n' >"$CRATE/scripts/deny-yanked-probe.py"
 	# The tag gate's first check is the signature rule itself, copied rather
 	# than stubbed so these scenarios exercise the script the hook ships with.
 	cp "$REPO_ROOT/scripts/tag-signature-check.sh" "$CRATE/scripts/"

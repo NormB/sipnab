@@ -1107,7 +1107,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 922 -> 923 (no address in a trailer, +1): build-ci-release.md's
     // commit-msg section links scripts/check-dco.py, where the noreply rule
     // lives.
-    const EXPECTED_CODE_LINKS: usize = 923;
+    // 923 -> 924 (yanked versions, +1): build-ci-release.md's list of
+    // pre-push gates links scripts/deny-yanked-probe.py.
+    const EXPECTED_CODE_LINKS: usize = 924;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -490,6 +490,33 @@ else
 	exit 1
 fi
 
+# -- Hard gate: yanked crate versions -----------------------------------------
+# NO-YANKED-VERSION-CHECK. deny.toml sets `[advisories] yanked = "deny"`, and
+# scripts/deny-yanked-probe.py, the one rule CI's Security audit job runs too,
+# checks Cargo.lock and fuzz/Cargo.lock with cargo-deny's advisories check,
+# then proves on a crate that locks a yanked version that cargo-deny refuses
+# it. A version is taken as soon as it is released (the owner, 2026-11-24) and
+# can be yanked later, on a tree that has not changed, so the gate has no pass
+# stamp. It sits outside the tree gates: a tag publishes the lock files as
+# they are. It needs cargo-deny, crates.io's index and the RustSec database,
+# all of which a push can reach.
+printf '  python3 scripts/deny-yanked-probe.py ... '
+if YANKED_OUT=$(python3 scripts/deny-yanked-probe.py 2>&1); then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '%s\n' "$YANKED_OUT" | tail -20 | sed 's/^/    /'
+	printf '\n'
+	printf '%bPush blocked: a lock file holds a yanked crate version, or the check could not run.%b\n' "$RED" "$NC"
+	printf 'Move off a yanked version with the command cargo-deny names, e.g.\n'
+	printf '    cargo update -p <crate>\n'
+	printf 'then run again:\n'
+	printf '    python3 scripts/deny-yanked-probe.py\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
+
 if [ "$TREE_PROVEN" = 0 ]; then
 # -- Hard gate: reduced feature combinations ----------------------------------
 # Everything above this point builds with --all-features, and that is exactly

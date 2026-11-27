@@ -1377,6 +1377,14 @@ jobs:
       - name: Cargo deny
         run: cargo deny check
 
+      # deny.toml's `yanked = "deny"` refuses a yanked crate version in
+      # Cargo.lock in the step above. This step checks fuzz/Cargo.lock too,
+      # which `cargo deny check` does not read, and proves with the pinned
+      # cargo-deny that a crate locking a yanked version fails
+      # (NO-YANKED-VERSION-CHECK; the pre-push hook runs the same script).
+      - name: Yanked crate versions fail
+        run: python3 scripts/deny-yanked-probe.py
+
       # The fuzz targets build sipnab as a path dependency against their own
       # lockfile, and Dependabot updates the two lockfiles separately. Every
       # version of a shared crate in fuzz/Cargo.lock must be one Cargo.lock

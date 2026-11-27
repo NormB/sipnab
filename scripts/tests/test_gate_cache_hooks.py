@@ -701,6 +701,15 @@ def pre_push_sandbox(tmp_path):
         "scripts/check-yang.py": "import sys\nprint('YANG: NOT CHECKED -- stub')\nsys.exit(2)\n",
         "scripts/tag-signature-check.sh": f'echo "tagsig $1" >> "{log}"; echo "tag $1: signed (stub)"\n',
         "scripts/code-scanning-clean.py": f"open('{log}', 'a').write('code-scanning\\n')\n",
+        # The yanked-version gate needs crates.io; test_deny_yanked_probe.py
+        # tests the script, so the sandbox records the call, and exits with
+        # the status in the harness file deny-yanked-rc (default 0).
+        "scripts/deny-yanked-probe.py": (
+            "import os, sys\n"
+            f"open('{log}', 'a').write('deny-yanked\\n')\n"
+            f"rc = '{harness}/deny-yanked-rc'\n"
+            "sys.exit(int(open(rc).read()) if os.path.exists(rc) else 0)\n"
+        ),
         "scripts/prose-gates.sh": (
             "PROSE_PIN=0\nPROSE_REASON=stub\n"
             f'prose_vale_run() {{ PROSE_OUTPUT=$(mktemp); echo "vale" >> "{log}"; return 0; }}\n'
@@ -1027,6 +1036,25 @@ def test_a_tag_only_push_still_runs_the_tag_gates(pp_tag_shared):
     assert any(line.startswith("tagsig ") for line in log), log
     assert "code-scanning" in log, log
     assert any(line.startswith("crate test --features full --test release_delivery_test") for line in log), log
+
+
+def test_a_tag_only_push_still_runs_the_yanked_version_gate(pp_tag_shared):
+    assert pp_tag_shared.rc == 0, pp_tag_shared.out
+    assert "deny-yanked" in pp_tag_shared.cargo, "a tag publishes the lock files as they are: they are checked"
+
+
+def test_every_push_runs_the_yanked_version_gate_even_on_an_unchanged_tree(pp_shared):
+    assert "deny-yanked" in pp_shared.first.cargo, pp_shared.first.cargo
+    assert "deny-yanked" in pp_shared.again.cargo, (
+        "a version can be yanked between two pushes of the same tree, so the gate has no pass stamp"
+    )
+
+
+def test_a_yanked_version_blocks_the_push(pp):
+    (pp.harness / "deny-yanked-rc").write_text("1")
+    rc, out = push(pp)
+    assert rc != 0, f"a failing yanked-version gate refuses the push: {out}"
+    assert "Push blocked: a lock file holds a yanked crate version" in out, out
 
 
 def test_a_tag_only_push_without_github_runs_every_gate(pp):
