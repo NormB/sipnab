@@ -6980,7 +6980,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `scripts/post-release.py`, which pushes the Homebrew tap, in place of a
     // `tap` job that no longer exists (+1). Measurement: the scan read 349
     // with the change staged.
-    const EXPECTED_REFERENCES: usize = 349;
+    // 349 -> 350 (yanked versions): ci.yml's audit step "Yanked crate
+    // versions fail" runs `scripts/deny-yanked-probe.py` (+1). Measurement:
+    // the scan read 350 with the change staged.
+    const EXPECTED_REFERENCES: usize = 350;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

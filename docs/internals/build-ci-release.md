@@ -1280,7 +1280,7 @@ Four places pulled from it, and each now does something else:
 - no Docker Hub image in what `cross` builds in
 - one codespell pin that CI and the hooks share
 
-[`pre-push`](../../.githooks/pre-push) adds seventeen hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds eighteen hard gates that `cargo test`
 does not cover:
 
 - a check that every pushed commit carries a good signature
@@ -1295,6 +1295,9 @@ does not cover:
 - `cd bpf && cargo clippy -- -D warnings`, on the nightly in
   [`bpf/rust-toolchain.toml`](../../bpf/rust-toolchain.toml)
 - the release-delivery tests
+- a check that neither lock file holds a crate version yanked from crates.io,
+  through [`scripts/deny-yanked-probe.py`](../../scripts/deny-yanked-probe.py),
+  on every push, a tag push included
 - a check of the reduced feature combinations `tls`, `api` and `wasm`
 - CI's clippy command over the feature sets that [`.github/feature-combos.txt`](../../.github/feature-combos.txt) marks `hook`, and over the rows the push's changed files pick
 - a non-Linux compile of the whole tree
@@ -1586,7 +1589,7 @@ The hook greps the tree for that list instead of carrying its own copy.
 - The first draft did hand-keep the list.
   It went stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the seventeen hard gates.
+**When it runs.** Last, after the eighteen hard gates.
 
 - Each of those fails in seconds.
 - Spending a minute on the corpus only to hear that the tree does not

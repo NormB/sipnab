@@ -8445,6 +8445,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         16 => "sixteen",
         17 => "seventeen",
         18 => "eighteen",
+        19 => "nineteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -8482,6 +8483,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
             "sixteen",
             "seventeen",
             "eighteen",
+            "nineteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -9431,6 +9433,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (16, "sixteen"),
         (17, "seventeen"),
         (18, "eighteen"),
+        (19, "nineteen"),
     ];
     let want = spellings
         .iter()

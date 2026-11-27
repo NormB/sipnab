@@ -11,6 +11,13 @@ ignore = [
     # 2026-11-17: "Ignore + migrate".
     { id = "RUSTSEC-2026-0543", reason = "unmaintained, informational, no patched version; required non-optionally by rmcp and arrow/parquet in their newest releases; sipnab's own use migrates under CHRONO-TO-JIFF" },
 ]
+# A crate version yanked from crates.io fails the check (NO-YANKED-VERSION-CHECK).
+# The default, "warn", printed `warning[yanked]` and passed. A version is taken
+# as soon as it is released (owner, 2026-11-24) and may be yanked later, and
+# OSV-Scanner does not report a yank. CI's Security audit job and the pre-push
+# hook check both lock files, and scripts/deny-yanked-probe.py proves there that
+# a yanked version fails.
+yanked = "deny"
 
 [licenses]
 allow = [
