@@ -1589,18 +1589,28 @@ fn a_tracked_message_without_a_call_id_costs_no_lookup() -> Result<(), TestError
     Ok(())
 }
 
-/// Branch tracking keeps the three lookups: `get` and `find_dialog` search
-/// by Call-ID, the store by the unit's key.
+/// Branch tracking asks separately: `get` and `find_dialog` each look up the
+/// bare Call-ID (a miss) and then the key of its first unit, and the store
+/// looks up the unit's own key. Five lookups, and no scan of every key.
 #[test]
-fn a_tracked_message_under_branch_tracking_costs_three_lookups() -> Result<(), TestError> {
+fn a_tracked_message_under_branch_tracking_costs_five_lookups() -> Result<(), TestError> {
     let mut store = DialogStore::new(100, false);
     store.set_tracking(DialogTracking::Branch);
     put(
         &mut store,
         request("INVITE", "a@example.com", 1, "z9hG4bK-1", t0()?)?,
     );
+    let scans_before = super::prefix_scans_on_this_thread();
     let (lookups, _) = tracked_lookups(&mut store, response(100, "a@example.com", 1, at(1)?)?);
-    assert_eq!(lookups, 3, "get, the store's own, find_dialog");
+    assert_eq!(
+        lookups, 5,
+        "get and find_dialog two each, the store's own one"
+    );
+    assert_eq!(
+        super::prefix_scans_on_this_thread() - scans_before,
+        0,
+        "no scan of every key"
+    );
     Ok(())
 }
 

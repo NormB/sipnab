@@ -549,6 +549,14 @@ pub struct DialogStore {
     dialogs: IndexMap<String, SipDialog, ahash::RandomState>,
     /// How messages are grouped into tracked units.
     tracking: DialogTracking,
+    /// Under `Branch` tracking, each Call-ID that has a unit keyed
+    /// `Call-ID` + newline + branch, and the key of the first such unit in
+    /// the map's order: what [`Self::find_dialog`] answers for the Call-ID
+    /// when no unit has the bare Call-ID as its key. Empty under `CallId`
+    /// tracking. Kept by [`Self::note_unit_at`] on insert and rebuilt by
+    /// [`Self::rebuild_first_units`] after anything that removes or reorders
+    /// units.
+    first_units: std::collections::HashMap<String, String, ahash::RandomState>,
     /// Maximum number of dialogs to retain.
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
@@ -1140,6 +1148,7 @@ impl DialogStore {
             max_dialogs,
             rotate,
             tracking: DialogTracking::default(),
+            first_units: std::collections::HashMap::default(),
             dialogs_opened_by_method: std::collections::BTreeMap::new(),
             idle_messages_evicted: 0,
             capacity_dialogs_dropped: 0,
@@ -1816,17 +1825,37 @@ impl DialogStore {
             return Some(DialogAt { index, exact: true });
         }
         if self.tracking == DialogTracking::Branch {
-            let prefix = format!("{call_id}\n");
-            return self
-                .dialogs
-                .keys()
-                .position(|k| k.starts_with(&prefix))
-                .map(|index| DialogAt {
-                    index,
-                    exact: false,
-                });
+            // The first unit of the Call-ID by the index, one more lookup,
+            // where a scan of every key used to find it.
+            let found = self
+                .first_units
+                .get(call_id)
+                .and_then(|key| self.key_index(key));
+            // Test builds check this in the tests' own oracle instead, so
+            // the scan counter counts only a scan that answers.
+            #[cfg(not(test))]
+            debug_assert_eq!(
+                found,
+                self.first_unit_by_scan(call_id),
+                "the Branch index disagrees with a scan for {call_id:?}"
+            );
+            return found.map(|index| DialogAt {
+                index,
+                exact: false,
+            });
         }
         None
+    }
+
+    /// The first unit of `call_id` under `Branch` tracking, found by scanning
+    /// every key: the answer [`Self::first_units`] gives in one lookup, kept
+    /// to check it in debug builds and in the tests. Counted in test builds
+    /// ([`prefix_scans_on_this_thread`]).
+    fn first_unit_by_scan(&self, call_id: &str) -> Option<usize> {
+        #[cfg(test)]
+        PREFIX_SCANS.with(|n| n.set(n.get() + 1));
+        let prefix = format!("{call_id}\n");
+        self.dialogs.keys().position(|k| k.starts_with(&prefix))
     }
 
     /// The dialog at `index` of the store's map.
@@ -1970,6 +1999,7 @@ impl DialogStore {
             // (`SipDialog::new`), so `msg` is dropped here and the answer
             // names that copy.
             let (index, _) = self.dialogs.insert_full(key, dialog);
+            self.note_unit_at(index);
             watch.inserted(index);
             Ok(index)
         }
@@ -2008,6 +2038,46 @@ impl DialogStore {
     /// processed; changing it mid-capture would strand already-keyed entries.
     pub fn set_tracking(&mut self, tracking: DialogTracking) {
         self.tracking = tracking;
+        self.rebuild_first_units();
+    }
+
+    /// The Call-ID part of a `Branch` unit key `Call-ID` + newline + branch;
+    /// `None` for a key without a newline (the bare Call-ID).
+    fn unit_call_id(key: &str) -> Option<&str> {
+        key.split_once('\n').map(|(call_id, _)| call_id)
+    }
+
+    /// Record the unit just inserted at `index`, the end of the map: it is
+    /// its Call-ID's first unit only when that Call-ID had none.
+    fn note_unit_at(&mut self, index: usize) {
+        if self.tracking != DialogTracking::Branch {
+            return;
+        }
+        let Some((key, _)) = self.dialogs.get_index(index) else {
+            return;
+        };
+        if let Some(call_id) = Self::unit_call_id(key)
+            && !self.first_units.contains_key(call_id)
+        {
+            self.first_units.insert(call_id.to_string(), key.clone());
+        }
+    }
+
+    /// Rebuild [`Self::first_units`] from the map, in its order: after a
+    /// removal (eviction, retain, clear) or a reorder (sort, merge), which
+    /// can change which unit of a Call-ID comes first.
+    fn rebuild_first_units(&mut self) {
+        self.first_units.clear();
+        if self.tracking != DialogTracking::Branch {
+            return;
+        }
+        for key in self.dialogs.keys() {
+            if let Some(call_id) = Self::unit_call_id(key)
+                && !self.first_units.contains_key(call_id)
+            {
+                self.first_units.insert(call_id.to_string(), key.clone());
+            }
+        }
     }
 
     /// The key `msg` groups under, given the configured mode.
@@ -2215,6 +2285,9 @@ impl DialogStore {
         // A method filter decides once per dialog on the message read first,
         // and the workers kept every message (see `crate::parallel`): only a
         // replay in read order makes the decision `--cores 1` makes.
+        // The map is empty here (its dialogs were taken into the fragments),
+        // so the Branch index starts empty too for the replay or the inserts.
+        self.rebuild_first_units();
         if fragments.len() > self.max_dialogs || self.method_filter_on() {
             self.replay_every_message(fragments, &message_position, sweeps);
             return;
@@ -2287,6 +2360,7 @@ impl DialogStore {
             dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
+        self.rebuild_first_units();
     }
 
     /// [`Self::merge_replaying`] when the fragments hold more keys than the
@@ -2364,6 +2438,7 @@ impl DialogStore {
     /// one evicted.
     pub fn sort_dialogs_by_key<K: Ord>(&mut self, mut key: impl FnMut(&SipDialog) -> K) {
         self.dialogs.sort_by_cached_key(|_, dialog| key(dialog));
+        self.rebuild_first_units();
         self.generation += 1;
     }
 
@@ -2397,6 +2472,7 @@ impl DialogStore {
     pub fn clear(&mut self) {
         self.generation += 1;
         self.dialogs.clear();
+        self.rebuild_first_units();
         self.refused.clear();
         self.engine_sightings = crate::relay_vocab::EngineSightings::for_dialogs(self.max_dialogs);
     }
@@ -2418,6 +2494,7 @@ impl DialogStore {
     {
         self.generation += 1;
         self.dialogs.retain(|_, d| predicate(d));
+        self.rebuild_first_units();
     }
 
     /// Whether `state` is one of the six this store calls active.
@@ -3200,6 +3277,7 @@ impl DialogStore {
     fn evict_oldest(&mut self) {
         let batch = (self.max_dialogs / 100).max(1).min(self.dialogs.len());
         self.dialogs.drain(0..batch);
+        self.rebuild_first_units();
         self.capacity_dialogs_evicted += batch as u64;
     }
 }
@@ -3218,6 +3296,19 @@ thread_local! {
     /// made on this thread. Per thread, so parallel tests do not count each
     /// other's lookups.
     static KEY_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many scans of every key [`DialogStore::first_unit_by_scan`] made
+    /// on this thread to find a `Branch` unit by its Call-ID prefix.
+    static PREFIX_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The value of [`PREFIX_SCANS`] on this thread.
+#[cfg(test)]
+fn prefix_scans_on_this_thread() -> usize {
+    PREFIX_SCANS.with(std::cell::Cell::get)
 }
 
 /// The value of [`KEY_LOOKUPS`] on this thread.
@@ -4028,6 +4119,8 @@ pub(crate) struct DialogAt {
     pub(crate) exact: bool,
 }
 
+#[cfg(test)]
+mod branch_index_tests;
 #[cfg(test)]
 mod compact_walk_tests;
 // The forms that hand a message back exist for the batch runner, which is
