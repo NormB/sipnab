@@ -5483,8 +5483,31 @@ pub fn init_logging_at(default_level: &str) {
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("SIPNAB_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
     let subscriber = crate::output::cli_print::stderr_log_subscriber(env_filter);
+    // The bridge stops at the most verbose level the subscriber can print.
+    // `LogTracer::init` set the `log` crate's level to trace, so every
+    // `log::trace!` a dependency reached (mio registers each socket, rustls
+    // each handshake step) built a record and asked the subscriber, which
+    // dropped it: about 75 instructions a call, against 7 for the loop that
+    // made it, measured 2026-11-26.
+    let bridge = log_bridge_level(tracing::Subscriber::max_level_hint(&subscriber));
     let _ = tracing::subscriber::set_global_default(subscriber);
-    let _ = tracing_log::LogTracer::init();
+    let _ = tracing_log::LogTracer::builder()
+        .with_max_level(bridge)
+        .init();
+}
+
+/// The level the `log`-to-`tracing` bridge lets through: the most verbose
+/// level the subscriber can print, `hint`, so no record it would print is
+/// stopped and none it would drop is built.
+///
+/// # Arguments
+///
+/// * `hint` — the subscriber's `max_level_hint`, the most verbose of its
+///   filter's directives; `None` when it cannot bound them (a directive that
+///   filters on a field value), which keeps every level.
+fn log_bridge_level(hint: Option<tracing::level_filters::LevelFilter>) -> log::LevelFilter {
+    use tracing_log::AsLog as _;
+    hint.map_or(log::LevelFilter::Trace, |level| level.as_log())
 }
 
 /// The tracing level a run logs at when `SIPNAB_LOG` does not say.
@@ -9794,6 +9817,307 @@ mod tests {
         let quiet = Cli::try_parse_from(argv.iter().copied().chain(["-q"]))?;
         assert_eq!(default_log_level(&quiet), "warn");
         Ok(())
+    }
+
+    /// Each level the subscriber can say it stops at, and the `log` level
+    /// the bridge gets for it.
+    #[test]
+    fn the_log_bridge_takes_each_level_the_subscriber_names() {
+        use tracing::level_filters::LevelFilter as Hint;
+        let cases = [
+            (Hint::OFF, log::LevelFilter::Off),
+            (Hint::ERROR, log::LevelFilter::Error),
+            (Hint::WARN, log::LevelFilter::Warn),
+            (Hint::INFO, log::LevelFilter::Info),
+            (Hint::DEBUG, log::LevelFilter::Debug),
+            (Hint::TRACE, log::LevelFilter::Trace),
+        ];
+        for (hint, want) in cases {
+            assert_eq!(
+                log_bridge_level(Some(hint)),
+                want,
+                "a subscriber that stops at {hint} gives the bridge {want}"
+            );
+        }
+    }
+
+    /// A subscriber that names no level may want any record, so the bridge
+    /// lets every level through, as `LogTracer::init` did.
+    #[test]
+    fn the_log_bridge_lets_everything_through_when_the_subscriber_names_no_level() {
+        assert_eq!(
+            log_bridge_level(None),
+            log::LevelFilter::Trace,
+            "no hint keeps every record"
+        );
+    }
+
+    /// The bridge level for `directives` as `SIPNAB_LOG` would give them,
+    /// read from the subscriber `init_logging_at` installs.
+    fn bridge_for(directives: &str) -> log::LevelFilter {
+        let subscriber = crate::output::cli_print::stderr_log_subscriber(
+            tracing_subscriber::EnvFilter::new(directives),
+        );
+        log_bridge_level(tracing::Subscriber::max_level_hint(&subscriber))
+    }
+
+    /// The bridge level of a filter is its most verbose directive, whatever
+    /// target that directive names: a record the subscriber can print still
+    /// reaches it.
+    #[test]
+    fn the_log_bridge_level_is_the_most_verbose_directive() {
+        let cases = [
+            ("error", log::LevelFilter::Error),
+            ("warn", log::LevelFilter::Warn),
+            ("info", log::LevelFilter::Info),
+            ("debug", log::LevelFilter::Debug),
+            ("trace", log::LevelFilter::Trace),
+            ("off", log::LevelFilter::Off),
+            ("rustls=trace", log::LevelFilter::Trace),
+            ("warn,rustls=debug", log::LevelFilter::Debug),
+            ("info,mio::poll=trace", log::LevelFilter::Trace),
+            ("sipnab=debug", log::LevelFilter::Debug),
+            ("error,sipnab=info", log::LevelFilter::Info),
+            ("off,rustls=warn", log::LevelFilter::Warn),
+            ("debug,rustls=error", log::LevelFilter::Debug),
+            ("INFO", log::LevelFilter::Info),
+        ];
+        for (directives, want) in cases {
+            assert_eq!(
+                bridge_for(directives),
+                want,
+                "SIPNAB_LOG={directives} gives the bridge {want}"
+            );
+        }
+    }
+
+    /// A span directive can enable records at its level inside the span, so
+    /// it counts toward the bridge level like any other directive.
+    #[test]
+    fn a_span_directive_counts_toward_the_log_bridge_level() {
+        assert_eq!(
+            bridge_for("warn,[request]=debug"),
+            log::LevelFilter::Debug,
+            "a span directive at debug raises the bridge to debug"
+        );
+    }
+
+    /// A directive that filters on a field value is decided per event, so
+    /// the subscriber cannot bound it and the bridge keeps every level.
+    #[test]
+    fn a_field_value_directive_keeps_every_level_at_the_log_bridge() {
+        assert_eq!(
+            bridge_for("warn,[{peer=example}]=info"),
+            log::LevelFilter::Trace,
+            "a value filter leaves the bridge at trace"
+        );
+    }
+
+    /// Environment variable that names the case the child of the log
+    /// bridge tests runs; unset in every other process.
+    const LOG_BRIDGE_CHILD: &str = "SIPNAB_TEST_LOG_BRIDGE_CHILD";
+
+    /// The levels [`log_bridge_child`] logs a probe at, in its order.
+    const PROBE_LEVELS: [log::Level; 5] = [
+        log::Level::Error,
+        log::Level::Warn,
+        log::Level::Info,
+        log::Level::Debug,
+        log::Level::Trace,
+    ];
+
+    /// What [`log_bridge_child`] printed: the `log` crate's level after
+    /// logging was set up, and the probe levels that reached the log.
+    struct BridgeRun {
+        max_level: String,
+        delivered: Vec<log::Level>,
+    }
+
+    /// Run [`log_bridge_child`] in a process of its own (logging can be set
+    /// up once per process), with `SIPNAB_LOG` set to `sipnab_log` or unset,
+    /// and `default_level` as the level `init_logging_at` is given.
+    fn run_log_bridge_child(
+        sipnab_log: Option<&str>,
+        default_level: &str,
+    ) -> Result<BridgeRun, TestError> {
+        use std::io::Read as _;
+        use std::os::unix::process::CommandExt as _;
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, module)| module);
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args(["--exact", &format!("{module}::log_bridge_child")])
+            .args(["--ignored", "--nocapture", "--test-threads=1"])
+            .env(LOG_BRIDGE_CHILD, default_level)
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        match sipnab_log {
+            Some(value) => command.env("SIPNAB_LOG", value),
+            None => command.env_remove("SIPNAB_LOG"),
+        };
+        let mut child = command.spawn()?;
+        // The child starts no process of its own, so ending it ends its group.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                return Err(format!(
+                    "SIPNAB_LOG={sipnab_log:?}: the child passed its 60 s deadline"
+                )
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut out = String::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            stdout.read_to_string(&mut out)?;
+        }
+        let mut err = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            stderr.read_to_string(&mut err)?;
+        }
+        let said = format!("{out}{err}");
+        assert!(
+            status.success(),
+            "SIPNAB_LOG={sipnab_log:?}: the child failed:\n{said}"
+        );
+        assert!(
+            said.contains("1 passed"),
+            "SIPNAB_LOG={sipnab_log:?}: the child ran no test:\n{said}"
+        );
+        // The harness prints the child's line after its own `test ... `.
+        let max_level = out
+            .split_once("log-bridge-max-level=")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .ok_or_else(|| format!("the child printed no level:\n{said}"))?
+            .to_owned();
+        let delivered = PROBE_LEVELS
+            .into_iter()
+            .filter(|level| err.contains(&format!("log-bridge-probe-{level}")))
+            .collect();
+        Ok(BridgeRun {
+            max_level,
+            delivered,
+        })
+    }
+
+    /// The child of the log bridge tests: sets logging up as a run does, logs
+    /// one probe per level from a dependency's target through the `log`
+    /// crate, and prints the `log` crate's level.
+    #[test]
+    #[ignore = "a child process of the log bridge tests; they run it"]
+    fn log_bridge_child() -> Result<(), TestError> {
+        use std::io::Write as _;
+        let Some(default_level) = std::env::var_os(LOG_BRIDGE_CHILD) else {
+            return Ok(());
+        };
+        init_logging_at(&default_level.to_string_lossy());
+        for level in PROBE_LEVELS {
+            log::log!(target: "rustls::probe", level, "log-bridge-probe-{level}");
+        }
+        // Not println!: no program code writes stdout with a print macro
+        // (tests/no_raw_stdout_print_test.rs).
+        writeln!(
+            std::io::stdout().lock(),
+            "log-bridge-max-level={}",
+            log::max_level()
+        )?;
+        Ok(())
+    }
+
+    /// Check one run of the child: the `log` crate's level, and that exactly
+    /// the probes the filter allows reached the log.
+    fn assert_log_bridge(
+        sipnab_log: Option<&str>,
+        default_level: &str,
+        max_level: &str,
+        delivered: &[log::Level],
+    ) -> Result<(), TestError> {
+        let run = run_log_bridge_child(sipnab_log, default_level)?;
+        assert_eq!(
+            run.delivered, delivered,
+            "SIPNAB_LOG={sipnab_log:?}, default {default_level}: the probes that reached the log"
+        );
+        assert_eq!(
+            run.max_level, max_level,
+            "SIPNAB_LOG={sipnab_log:?}, default {default_level}: the log crate's level"
+        );
+        Ok(())
+    }
+
+    use log::Level::{Debug as D, Error as E, Info as I, Trace as T, Warn as W};
+
+    /// A run at the default level: the `log` crate stops at info, and the
+    /// error, warn and info probes are logged.
+    #[test]
+    fn the_log_bridge_stops_at_info_on_a_default_run() -> Result<(), TestError> {
+        assert_log_bridge(None, "info", "INFO", &[E, W, I])
+    }
+
+    /// `-q`: warn.
+    #[test]
+    fn the_log_bridge_stops_at_warn_on_a_quiet_run() -> Result<(), TestError> {
+        assert_log_bridge(None, "warn", "WARN", &[E, W])
+    }
+
+    /// The TUI: error.
+    #[test]
+    fn the_log_bridge_stops_at_error_under_the_tui() -> Result<(), TestError> {
+        assert_log_bridge(None, "error", "ERROR", &[E])
+    }
+
+    /// `SIPNAB_LOG=debug` overrides the default and lets a dependency's
+    /// debug record through.
+    #[test]
+    fn the_log_bridge_delivers_a_dependency_debug_record_at_sipnab_log_debug()
+    -> Result<(), TestError> {
+        assert_log_bridge(Some("debug"), "error", "DEBUG", &[E, W, I, D])
+    }
+
+    /// `SIPNAB_LOG=trace` lets every record through.
+    #[test]
+    fn the_log_bridge_delivers_every_record_at_sipnab_log_trace() -> Result<(), TestError> {
+        assert_log_bridge(Some("trace"), "info", "TRACE", &[E, W, I, D, T])
+    }
+
+    /// A directive for the dependency alone still reaches its trace records.
+    #[test]
+    fn the_log_bridge_delivers_a_dependency_trace_record_its_own_directive_names()
+    -> Result<(), TestError> {
+        assert_log_bridge(Some("rustls=trace"), "info", "TRACE", &[E, W, I, D, T])
+    }
+
+    /// A debug directive for the dependency over a warn default.
+    #[test]
+    fn the_log_bridge_takes_a_dependency_directive_above_the_default() -> Result<(), TestError> {
+        assert_log_bridge(Some("warn,rustls=debug"), "info", "DEBUG", &[E, W, I, D])
+    }
+
+    /// A trace directive for another target raises the `log` crate's level,
+    /// and this target's records are still filtered at info.
+    #[test]
+    fn the_log_bridge_level_follows_another_targets_directive() -> Result<(), TestError> {
+        assert_log_bridge(Some("info,mio::poll=trace"), "error", "TRACE", &[E, W, I])
+    }
+
+    /// `SIPNAB_LOG=off`: nothing is logged, and the `log` crate stops there.
+    #[test]
+    fn the_log_bridge_is_off_at_sipnab_log_off() -> Result<(), TestError> {
+        assert_log_bridge(Some("off"), "info", "OFF", &[])
+    }
+
+    /// A `SIPNAB_LOG` that does not parse falls back to the default level.
+    #[test]
+    fn the_log_bridge_takes_the_default_when_sipnab_log_does_not_parse() -> Result<(), TestError> {
+        assert_log_bridge(Some("rustls=loud"), "warn", "WARN", &[E, W])
     }
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.

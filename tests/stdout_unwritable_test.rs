@@ -382,7 +382,9 @@ fn f_print_yang_module_closed() -> Result<(), TestError> {
     Ok(())
 }
 
-/// `sipnab fleet --help` into a read-only standard output.
+/// `sipnab fleet --help` into a read-only standard output. `sipnab fleet`
+/// is built with the `api` feature only.
+#[cfg(feature = "api")]
 #[test]
 fn f_fleet_help_read_only() -> Result<(), TestError> {
     let run = sipnab(&["fleet", "--help"], &Out::ReadOnly)?;
@@ -390,7 +392,9 @@ fn f_fleet_help_read_only() -> Result<(), TestError> {
     Ok(())
 }
 
-/// `sipnab g729 --help` into a closed standard output.
+/// `sipnab g729 --help` into a closed standard output. A build without the
+/// `g729` feature answers on stderr and exits 1, with no help to print.
+#[cfg(feature = "g729")]
 #[test]
 fn f_g729_help_closed() -> Result<(), TestError> {
     let run = sipnab(&["g729", "--help"], &Out::Closed)?;
@@ -536,7 +540,8 @@ fn s_print_yang_module_to_a_file() -> Result<(), TestError> {
     Ok(())
 }
 
-/// `sipnab fleet --help` into a file.
+/// `sipnab fleet --help` into a file (a build with the `api` feature).
+#[cfg(feature = "api")]
 #[test]
 fn s_fleet_help_to_a_file() -> Result<(), TestError> {
     let (run, text) = to_file(&["fleet", "--help"])?;
@@ -544,7 +549,8 @@ fn s_fleet_help_to_a_file() -> Result<(), TestError> {
     Ok(())
 }
 
-/// `sipnab g729 --help` into a file.
+/// `sipnab g729 --help` into a file (a build with the `g729` feature).
+#[cfg(feature = "g729")]
 #[test]
 fn s_g729_help_to_a_file() -> Result<(), TestError> {
     let (run, text) = to_file(&["g729", "--help"])?;
@@ -752,7 +758,9 @@ fn e_usage_error_with_closed_stdout_exits_2() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A usage error of `sipnab fleet` keeps its code with a read-only output.
+/// A usage error of `sipnab fleet` keeps its code with a read-only output
+/// (a build with the `api` feature).
+#[cfg(feature = "api")]
 #[test]
 fn e_fleet_usage_error_read_only_exits_2() -> Result<(), TestError> {
     let run = sipnab(&["fleet", "--no-such-flag-example"], &Out::ReadOnly)?;
@@ -811,7 +819,7 @@ fn e_read_only_target_is_untouched() -> Result<(), TestError> {
 // ── The gate: every write to standard output goes through the check ──
 
 /// Files that may name `io::stdout()` in production code, and why.
-const RAW_STDOUT_ALLOWED: [(&str, &str); 7] = [
+const RAW_STDOUT_ALLOWED: [(&str, &str); 6] = [
     ("src/output/stdout.rs", "the checked writer itself"),
     (
         "src/mcp/transport.rs",
@@ -826,7 +834,6 @@ const RAW_STDOUT_ALLOWED: [(&str, &str); 7] = [
         "src/tui/mod.rs",
         "the terminal interface draws on a terminal",
     ),
-    ("src/tui/terminal_input.rs", "terminal mode switches"),
     ("src/tui/clipboard.rs", "an OSC 52 sequence to the terminal"),
 ];
 
@@ -843,10 +850,9 @@ fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), TestE
     Ok(())
 }
 
-/// The files of `src/` whose code (comments and strings blanked) names
-/// `io::stdout()`. Test modules are scanned too: `production_source` ends a
-/// file at its first `#[cfg(test)] mod x;` line, which in src/tui/mod.rs is
-/// line 67 of 6,229 (2026-11-26), and no test module writes to stdout.
+/// The files of `src/` whose production code (test module cut, comments and
+/// strings blanked) names `io::stdout()`. A test module may write its own
+/// stdout, as the log-bridge child test in src/app/bootstrap.rs does.
 fn raw_stdout_files() -> Result<Vec<String>, TestError> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
@@ -854,7 +860,7 @@ fn raw_stdout_files() -> Result<Vec<String>, TestError> {
     let mut hits = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file)?;
-        let code = source_scan::code_only(&text);
+        let code = source_scan::code_only(source_scan::production_source(&text));
         if code.contains("io::stdout()") {
             let rel = file.strip_prefix(root)?.to_string_lossy().into_owned();
             hits.push(rel);

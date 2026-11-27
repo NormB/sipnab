@@ -6445,23 +6445,16 @@ impl PacketPass<'_, '_, '_> {
     ) -> sip::dialog_store::Placed {
         let cli = self.ctx.cli;
         let dialog_store = &mut *self.state.dialog_store;
-        // Fire event exec before updating state (captures state change)
-        let prev_state = msg
-            .call_id()
-            .and_then(|id| dialog_store.get(id))
-            .map(|d| d.state().clone());
-
         // With the SDP classification parsed for the links, so the dialog's
-        // SDP timeline does not parse the body again.
-        let placed = dialog_store.process_message_placed(msg, sdp);
-
-        // The dialog of the message's Call-ID, as an index: the message may
-        // now be the store's own, and --tag changes the store. One lookup
-        // serves both --tag and the state check below.
-        let found = dialog_store
-            .placed(&placed)
-            .and_then(sip::SipMessage::call_id)
-            .map(|id| dialog_store.find_dialog(id));
+        // SDP timeline does not parse the body again. The answer also gives
+        // the dialog's state before the message (for the event below) and the
+        // dialog of the message's Call-ID after it, as an index: the message
+        // may now be the store's own, and --tag changes the store.
+        let sip::dialog_store::Tracked {
+            placed,
+            before: prev_state,
+            found,
+        } = dialog_store.process_message_tracked(msg, sdp);
 
         // Apply --tag to the dialog
         if let Some(ref tag_label) = cli.dialog_args.tag
@@ -19299,13 +19292,68 @@ mod tests {
         ]
     }
 
-    /// An in-dialog message costs the dialog map three hash lookups: the
-    /// state before, the store's own, the state after. Reading the message
-    /// back from the store adds none.
+    /// An in-dialog message costs the dialog map one hash lookup: the store's
+    /// own, which also answers the state before and the dialog after.
+    /// Reading the message back from the store adds none.
     #[test]
-    fn an_in_dialog_message_costs_three_lookups() -> Result<(), TestError> {
+    fn an_in_dialog_message_costs_one_lookup() -> Result<(), TestError> {
         let cost = cost_of_last_packet(&base_cli(), &invite_then_ringing("l3@example.com"))?;
-        assert_eq!(cost.lookups, 3, "lookups for one in-dialog message");
+        assert_eq!(cost.lookups, 1, "lookups for one in-dialog message");
+        Ok(())
+    }
+
+    /// The message that opens a dialog costs one lookup too: the miss.
+    #[test]
+    fn a_message_that_opens_a_dialog_costs_one_lookup() -> Result<(), TestError> {
+        let [invite, _] = invite_then_ringing("l1@example.com");
+        let cost = cost_of_last_packet(&base_cli(), &[invite])?;
+        assert_eq!(cost.lookups, 1, "lookups for the opening message");
+        Ok(())
+    }
+
+    /// A tagged opening message costs one lookup too: the dialog found for
+    /// the tag is the one the store just opened.
+    #[test]
+    fn tagging_an_opening_message_costs_one_lookup() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.dialog_args.tag = Some("probe".to_string());
+        let [invite, _] = invite_then_ringing("lt1@example.com");
+        let cost = cost_of_last_packet(&cli, &[invite])?;
+        assert_eq!(cost.lookups, 1, "lookups for one tagged opening message");
+        Ok(())
+    }
+
+    /// The dialog hook runs once per state change, as before the lookups
+    /// were folded into the store's: the INVITE opens the dialog (Trying),
+    /// the 180 rings, its retransmission changes nothing, the 200 answers.
+    #[test]
+    fn the_dialog_hook_is_queued_once_per_state_change() -> Result<(), TestError> {
+        let call_id = "ev@example.com";
+        let [invite, ringing] = invite_then_ringing(call_id);
+        let [_, ringing_again] = invite_then_ringing(call_id);
+        let answered = parsed_sip_packet(ok_to_invite(call_id), 5060, 5060);
+        let driven = drive_packets_kept(
+            &base_cli(),
+            &[invite, ringing, ringing_again, answered],
+            EventExecEngine::new(
+                Some("true".to_owned()),
+                None,
+                0,
+                0.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        let dialog = driven.dialogs.get(call_id).ok_or("the dialog is tracked")?;
+        assert_eq!(
+            dialog.state(),
+            &sip::dialog::DialogState::InCall,
+            "the call was answered"
+        );
+        assert_eq!(
+            driven.event_exec.pending_depth(),
+            3,
+            "Trying, Ringing and InCall each queue the hook once"
+        );
         Ok(())
     }
 
@@ -19316,7 +19364,7 @@ mod tests {
         let mut cli = base_cli();
         cli.dialog_args.tag = Some("probe".to_string());
         let cost = cost_of_last_packet(&cli, &invite_then_ringing("lt@example.com"))?;
-        assert_eq!(cost.lookups, 3, "lookups for one tagged in-dialog message");
+        assert_eq!(cost.lookups, 1, "lookups for one tagged in-dialog message");
         Ok(())
     }
 
@@ -19367,6 +19415,18 @@ mod tests {
         for i in 0..extra {
             msg.push_str(&format!("X-Fixture-{i}: value-{i}\r\n"));
         }
+        msg.push_str("Content-Length: 0\r\n\r\n");
+        msg.into_bytes()
+    }
+
+    /// A 200 OK to the INVITE of `call_id` that [`invite_bytes`] builds.
+    fn ok_to_invite(call_id: &str) -> Vec<u8> {
+        let mut msg = String::from("SIP/2.0 200 OK\r\n");
+        msg.push_str("Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc\r\n");
+        msg.push_str("From: Alice <sip:alice@example.com>;tag=a1b2\r\n");
+        msg.push_str("To: Bob <sip:bob@example.com>;tag=b2\r\n");
+        msg.push_str(&format!("Call-ID: {call_id}\r\n"));
+        msg.push_str("CSeq: 1 INVITE\r\n");
         msg.push_str("Content-Length: 0\r\n\r\n");
         msg.into_bytes()
     }

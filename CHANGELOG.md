@@ -10,6 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reading a capture file looks up each SIP message's call once instead of three times.**
+  - Effect: A `-N --quiet --analyze` run over a SIP-only capture runs 2.01% fewer instructions; the output and the exit status stay the same.
+  - Limit: With `--dialog-track branch` each message still costs three lookups.
+
 ### Fixed
 
 - **A run whose standard output is closed or read-only now fails and says why.**
