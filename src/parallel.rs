@@ -2390,6 +2390,8 @@ fn shard_set_parallel(
             let (tx, rx) = crossbeam_channel::bounded::<ReaderMsg>(depth);
             queues.push(rx);
             let runway = &runway;
+            // A reader counts nothing a test reads (it opens, filters and
+            // peeks), so a test's ledger is handed to the workers only.
             scope.spawn(move || {
                 for file in (first..paths.len()).step_by(readers) {
                     if runway.canceled() {
@@ -2634,17 +2636,21 @@ pub fn run_offline_parallel_set(
         .map(|wrx| {
             let cfg = cfg.clone();
             // The packet counter lands once per worker: see
-            // `capture::deferred`.
+            // `capture::deferred`. A test's ledger follows the work onto
+            // this thread (`capture::test_ledger`; nothing outside tests).
+            let ledger = crate::capture::test_ledger::ledger_here();
             thread::spawn(move || {
-                crate::capture::captured_packets_deferred(|| {
-                    crate::relay::rtpproxy::with_worker_pairings(|| {
-                        let mut worker = Worker::new(cfg);
-                        for batch in wrx.iter() {
-                            for delivery in batch.iter() {
-                                worker.feed(delivery);
+                crate::capture::test_ledger::adopt(ledger, || {
+                    crate::capture::captured_packets_deferred(|| {
+                        crate::relay::rtpproxy::with_worker_pairings(|| {
+                            let mut worker = Worker::new(cfg);
+                            for batch in wrx.iter() {
+                                for delivery in batch.iter() {
+                                    worker.feed(delivery);
+                                }
                             }
-                        }
-                        worker.finish()
+                            worker.finish()
+                        })
                     })
                 })
             })
@@ -5586,17 +5592,52 @@ mod tests {
         );
         let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let path = write_eth_pcap(dir.path(), "copied.pcap", &[frame])?;
-        let before = crate::capture::undecodable_frames();
-        let r = run_offline_parallel_file(
-            &[path],
-            &crate::capture::CaptureConfig::default(),
-            pcfg_default_range(),
-        )?;
+        // This run's own ledger: the process-wide total also moves with
+        // every other lib test that decodes a bad frame.
+        let (r, ledger) = crate::capture::test_ledger::counting(|| {
+            run_offline_parallel_file(
+                &[path],
+                &crate::capture::CaptureConfig::default(),
+                pcfg_default_range(),
+            )
+        });
+        let r = r?;
         assert_eq!(r.packets_read, 1);
+        assert_eq!(ledger.undecodable_frames(), 1, "one frame, counted once");
+        Ok(())
+    }
+
+    /// A `--cores` run inside `counting` counts what every reader and worker
+    /// thread tallies, each once: the run's threads take the ledger of the
+    /// thread that starts them (`capture::test_ledger::adopt`).
+    #[test]
+    fn a_cores_run_counts_every_workers_tally_once_in_its_ledger() -> Result<(), TestError> {
+        const CALLS: u8 = 20;
+        let frames: Vec<Vec<u8>> = (0..CALLS)
+            .map(|n| {
+                let offer = sip_with_sdp(
+                    "INVITE sip:b@x SIP/2.0",
+                    &format!("c{n}"),
+                    ([10, 2, 0, n], 20000),
+                );
+                eth_udp_between([10, 1, 0, n], [10, 1, 1, n], 5060, 5060, &offer)
+            })
+            .collect();
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let path = write_eth_pcap(dir.path(), "calls.pcap", &frames)?;
+        let (r, ledger) = crate::capture::test_ledger::counting(|| {
+            run_offline_parallel_file(
+                &[path],
+                &crate::capture::CaptureConfig::default(),
+                pcfg_default_range(),
+            )
+        });
+        let r = r?;
+        assert_eq!(r.packets_read, u64::from(CALLS), "every frame read");
         assert_eq!(
-            crate::capture::undecodable_frames(),
-            before + 1,
-            "one frame, counted once"
+            ledger.captured_packets(),
+            u64::from(CALLS),
+            "each frame counted once, by whichever of the two workers owns it"
         );
         Ok(())
     }
