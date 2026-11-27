@@ -696,8 +696,10 @@ if [ -f .github/feature-combos.txt ] && [ -f "$FEATURE_MATRIX" ]; then
 	# this push's refs and picks the rows by the feature gates of the changed
 	# files (`rows_for`): the rows marked `hook` always; for a change behind
 	# a feature gate, the rows with the fewest features that compile it; for
-	# any other change, every single-feature row. Its line on standard error
-	# says which and how many combinations stay in CI.
+	# any other change, every single-feature row. A Cargo.toml or Cargo.lock
+	# change that only moves the package's own version, as a release does,
+	# counts as no change (`version_only_change`). Its lines on standard
+	# error say which and how many combinations stay in CI.
 	if ! HOOK_ROWS=$(printf '%s\n' "$PUSH_REFS" | python3 "$FEATURE_MATRIX" --push-rows); then
 		printf '  feature sets for this push ... %bFAIL%b\n' "$RED" "$NC"
 		printf '%s\n' "$HOOK_ROWS" | sed 's/^/    /'

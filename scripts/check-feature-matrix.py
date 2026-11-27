@@ -667,11 +667,48 @@ def rows_for(changed, gates, items: list[Combo], table: dict[str, list[str]]) ->
     return rows, note
 
 
-def changed_files(refs_text: str, git) -> list[str] | None:
+def version_only_change(path: str, old: str | None, new: str | None, own: str | None) -> bool:
+    """Whether a change to Cargo.toml or Cargo.lock only moves the version of
+    the package `own` (PUSH-ROWS-FALLBACK-ON-VERSION-ONLY-LOCK).
+
+    A release moves `version` in Cargo.toml's [package] and in the package's
+    own Cargo.lock entry; neither changes a dependency, a feature or a cfg, so
+    no feature row compiles anything new. Any other difference counts, and so
+    does a file added, deleted or unreadable: the answer is False."""
+    if path not in ("Cargo.toml", "Cargo.lock") or old is None or new is None:
+        return False
+    import tomllib
+    try:
+        before, after = tomllib.loads(old), tomllib.loads(new)
+    except ValueError:
+        return False
+    if path == "Cargo.toml":
+        for doc in (before, after):
+            if isinstance(doc.get("package"), dict):
+                doc["package"].pop("version", None)
+        return before == after
+    if own is None:
+        return False
+
+    def without_own_version(doc):
+        packages = doc.get("package", [])
+        if not isinstance(packages, list):
+            return doc
+        doc["package"] = [{k: v for k, v in p.items() if k != "version"}
+                          if isinstance(p, dict) and p.get("name") == own and "source" not in p else p
+                          for p in packages]
+        return doc
+
+    return without_own_version(before) == without_own_version(after)
+
+
+def changed_files(refs_text: str, git, settled: list | None = None) -> list[str] | None:
     """The paths the pushed commits change, from pre-push's input; `git(*args)`
     returns standard output or None. None when a line or a range cannot be
     read: a new branch is measured from origin/main, an update from the
-    remote's commit when this clone has it."""
+    remote's commit when this clone has it. A Cargo.toml or Cargo.lock whose
+    change only moves the package's own version (`version_only_change`) is
+    left out, and added to `settled` when it is given."""
     out: list[str] = []
     for line in refs_text.splitlines():
         if not line.strip():
@@ -692,7 +729,21 @@ def changed_files(refs_text: str, git) -> list[str] | None:
         diff = git("diff", "--name-only", base, local)
         if diff is None:
             return None
-        out += [p for p in diff.splitlines() if p]
+        own = None
+        try:
+            import tomllib
+            own = tomllib.loads(git("show", f"{local}:Cargo.toml") or "").get("package", {}).get("name")
+        except (ValueError, AttributeError):
+            own = None
+        for p in diff.splitlines():
+            if not p:
+                continue
+            if p in ("Cargo.toml", "Cargo.lock") and version_only_change(
+                    p, git("show", f"{base}:{p}"), git("show", f"{local}:{p}"), own):
+                if settled is not None and p not in settled:
+                    settled.append(p)
+                continue
+            out.append(p)
     return list(dict.fromkeys(out))
 
 
@@ -720,7 +771,11 @@ def print_push_rows(refs_text: str) -> int:
             sources[p.relative_to(ROOT).as_posix()] = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-    rows, note = rows_for(changed_files(refs_text, _git_out), module_gates(sources), items, table)
+    settled: list[str] = []
+    rows, note = rows_for(changed_files(refs_text, _git_out, settled), module_gates(sources), items, table)
+    if settled:
+        print(f"  feature rows: {' and '.join(sorted(settled))} change only the package version; "
+              "no row for them", file=sys.stderr)
     print(note, file=sys.stderr)
     for c in rows:
         print(f"{hook_step(c.features)}\t{c.features}\t{' '.join(lint_command(c.features))}")
