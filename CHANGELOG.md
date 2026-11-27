@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The plugin runtime is built with wasmi 2.0.3; crates.io yanked 2.0.2.**
+  - Was: Releases up to 0.5.277 were built with wasmi 2.0.2 and wasmi_core 2.0.2, both yanked.
+  - Effect: The 2.0.3 fix concerns wasmi's `simd` feature, which sipnab does not enable, so plugins run as before.
+
 ## [0.5.277] - 2026-11-27
 
 ### Changed

@@ -451,10 +451,10 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-encoder | 0.263.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmi | 2.0.2 | MIT/Apache-2.0 |
-| wasmi_collections | 2.0.2 | MIT/Apache-2.0 |
-| wasmi_core | 2.0.2 | MIT/Apache-2.0 |
-| wasmi_ir | 2.0.2 | MIT/Apache-2.0 |
+| wasmi | 2.0.3 | MIT/Apache-2.0 |
+| wasmi_collections | 2.0.3 | MIT/Apache-2.0 |
+| wasmi_core | 2.0.3 | MIT/Apache-2.0 |
+| wasmi_ir | 2.0.3 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmparser | 0.263.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wast | 263.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
