@@ -244,6 +244,115 @@ pub(crate) fn untallied<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// What one test's own work added to the process-wide capture counters.
+///
+/// The lib tests run as threads of one process (`cargo test --lib`), so a
+/// test that reads a process-wide counter before and after its work also
+/// reads what every other test added meanwhile. Inside [`counting`], every
+/// addition [`tally`] or [`record_undecodable`] makes on this thread, and on
+/// the `--cores` threads this thread starts ([`ledger_here`] / [`adopt`]),
+/// is also kept in the scope's ledger, which the test reads instead. Test
+/// builds only; the counters themselves are unchanged.
+#[cfg(test)]
+pub(crate) mod test_ledger {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+
+    /// The additions of one [`counting`] scope, by counter address.
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct Ledger(Arc<Mutex<HashMap<usize, u64>>>);
+
+    impl Ledger {
+        /// What the scope added to `counter`.
+        pub(crate) fn of(&self, counter: &AtomicU64) -> u64 {
+            let at = std::ptr::from_ref(counter) as usize;
+            self.0
+                .lock()
+                .map_or(0, |m| m.get(&at).copied().unwrap_or(0))
+        }
+
+        /// What the scope added to [`super::undecodable_frames`].
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        pub(crate) fn undecodable_frames(&self) -> u64 {
+            self.of(&super::UNDECODABLE_FRAMES)
+        }
+
+        /// What the scope added to [`super::captured_packets`].
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        pub(crate) fn captured_packets(&self) -> u64 {
+            self.of(&super::CAPTURED_PACKETS)
+        }
+    }
+
+    thread_local! {
+        /// The ledger this thread's additions go to; `None` outside a scope.
+        static CURRENT: RefCell<Option<Ledger>> = const { RefCell::new(None) };
+    }
+
+    /// Keep an addition of `n` to `counter` in this thread's ledger, if any.
+    pub(crate) fn record(counter: &AtomicU64, n: u64) {
+        CURRENT.with(|current| {
+            if let Some(ledger) = current.borrow().as_ref()
+                && let Ok(mut m) = ledger.0.lock()
+            {
+                *m.entry(std::ptr::from_ref(counter) as usize).or_insert(0) += n;
+            }
+        });
+    }
+
+    /// Run `f` with this thread's additions kept in `ledger` (or in none),
+    /// restoring the previous ledger after, on every path out.
+    pub(crate) fn adopt<R>(ledger: Option<Ledger>, f: impl FnOnce() -> R) -> R {
+        /// Puts the previous ledger back, including on a panic.
+        struct Restore(Option<Ledger>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0.take();
+                CURRENT.with(|current| *current.borrow_mut() = previous);
+            }
+        }
+        let _restore = Restore(CURRENT.with(|current| current.replace(ledger)));
+        f()
+    }
+
+    /// The ledger this thread's additions go to, to hand to a thread it
+    /// starts (the `--cores` workers, native builds only).
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    pub(crate) fn ledger_here() -> Option<Ledger> {
+        CURRENT.with(|current| current.borrow().clone())
+    }
+
+    /// Run `f` in a new ledger and return its result with what it added.
+    pub(crate) fn counting<R>(f: impl FnOnce() -> R) -> (R, Ledger) {
+        let ledger = Ledger::default();
+        let out = adopt(Some(ledger.clone()), f);
+        (out, ledger)
+    }
+}
+
+/// [`test_ledger::ledger_here`] and [`test_ledger::adopt`] outside test
+/// builds: nothing to hand over, and the closure runs as it is.
+#[cfg(all(not(test), not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) mod test_ledger {
+    /// Nothing: there is no ledger outside test builds.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct NoLedger;
+
+    /// Nothing to hand to a thread this one starts.
+    #[inline]
+    pub(crate) fn ledger_here() -> Option<NoLedger> {
+        None
+    }
+
+    /// Run `f`.
+    #[inline]
+    pub(crate) fn adopt<R>(_ledger: Option<NoLedger>, f: impl FnOnce() -> R) -> R {
+        f()
+    }
+}
+
 /// Add `n` to a process-wide capture counter, unless this thread is inside
 /// [`untallied`]. Inside [`deferred`] for this counter, the addition waits for
 /// the scope to end.
@@ -252,6 +361,8 @@ pub(crate) fn tally(counter: &AtomicU64, n: u64) {
     if !tallying() {
         return;
     }
+    #[cfg(test)]
+    test_ledger::record(counter, n);
     let at = std::ptr::from_ref(counter) as usize;
     let held = DEFERRED.with(|d| match d.get() {
         Some((key, pending)) if key == at => {
@@ -1209,8 +1320,12 @@ pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
         return;
     };
     UNDECODABLE_FRAMES.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    test_ledger::record(&UNDECODABLE_FRAMES, 1);
     if facts.snapped {
         SNAPPED_UNDECODABLE_FRAMES.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        test_ledger::record(&SNAPPED_UNDECODABLE_FRAMES, 1);
     }
     match reason {
         UndecodableReason::UnsupportedLinkType(dlt) => {
@@ -3846,12 +3961,19 @@ mod tests {
         #[test]
         #[serial_test::serial(undecodable_tally)]
         fn an_untallied_frame_is_not_counted_as_undecodable() -> Result<(), TestError> {
+            // Read from each read's own ledger: the process-wide total also
+            // moves with every other lib test that decodes a bad frame.
             let mut proc = PacketProcessor::new();
-            let before = undecodable_frames();
-            assert!(untallied(|| proc.process(&packet(vec![0x01, 0x02, 0x03]))).is_empty());
-            assert_eq!(undecodable_frames(), before, "the copy is not counted");
-            assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
-            assert_eq!(undecodable_frames(), before + 1, "the owner's read is");
+            let (copy, ledger) = crate::capture::test_ledger::counting(|| {
+                untallied(|| proc.process(&packet(vec![0x01, 0x02, 0x03])))
+            });
+            assert!(copy.is_empty(), "the copy parses to nothing");
+            assert_eq!(ledger.undecodable_frames(), 0, "the copy is not counted");
+            let (owned, ledger) = crate::capture::test_ledger::counting(|| {
+                proc.process(&packet(vec![0x01, 0x02, 0x03]))
+            });
+            assert!(owned.is_empty(), "the owner's read parses to nothing");
+            assert_eq!(ledger.undecodable_frames(), 1, "the owner's read is");
             Ok(())
         }
 
