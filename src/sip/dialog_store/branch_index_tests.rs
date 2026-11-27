@@ -168,10 +168,13 @@ fn check(store: &DialogStore, call_ids: &[String], when: &str) {
 
 /// One step of a scenario.
 enum Step {
-    /// Process a message on the read path.
-    Read(SipMessage),
-    /// Process a message as the batch runner does.
-    Tracked(SipMessage),
+    /// Process a message on the read path. Boxed, as `Tracked` is, so the
+    /// variants stay close in size with or without the `native` feature.
+    Read(Box<SipMessage>),
+    /// Process a message as the batch runner does (native-only, as the
+    /// batch runner is).
+    #[cfg(feature = "native")]
+    Tracked(Box<SipMessage>),
     /// Sort the dialogs by their numbers, highest first.
     SortNewestFirst,
     /// Keep the dialogs whose method is not `method`.
@@ -189,11 +192,12 @@ fn run(mut store: DialogStore, call_ids: &[&str], steps: Vec<Step>) -> DialogSto
     for (n, step) in steps.into_iter().enumerate() {
         let when = match step {
             Step::Read(msg) => {
-                store.process_message_read(msg, &SdpRead::Unread);
+                store.process_message_read(*msg, &SdpRead::Unread);
                 "read"
             }
+            #[cfg(feature = "native")]
             Step::Tracked(msg) => {
-                let _ = store.process_message_tracked_capped(msg, &SdpRead::Unread, 500);
+                let _ = store.process_message_tracked_capped(*msg, &SdpRead::Unread, 500);
                 "tracked"
             }
             Step::SortNewestFirst => {
@@ -224,7 +228,7 @@ fn run(mut store: DialogStore, call_ids: &[&str], steps: Vec<Step>) -> DialogSto
 
 /// `msgs` as read steps.
 fn reads(msgs: Vec<SipMessage>) -> Vec<Step> {
-    msgs.into_iter().map(Step::Read).collect()
+    msgs.into_iter().map(|m| Step::Read(Box::new(m))).collect()
 }
 
 /// The messages of `calls` interleaved, one message of each call in turn.
@@ -302,12 +306,13 @@ fn ten_interleaved_calls_each_find_their_first_unit() -> Result<(), TestError> {
 }
 
 /// The batch runner's path agrees as the read path does.
+#[cfg(feature = "native")]
 #[test]
 fn the_tracked_path_finds_each_first_unit() -> Result<(), TestError> {
     let calls = ids(5);
     let steps = interleaved(&calls)?
         .into_iter()
-        .map(Step::Tracked)
+        .map(|m| Step::Tracked(Box::new(m)))
         .collect();
     run(branch_store(100, false), &refs(&calls), steps);
     Ok(())
@@ -473,6 +478,7 @@ fn five_hundred_calls_each_find_their_first_unit() -> Result<(), TestError> {
 }
 
 /// Every call is found, read and tracked messages mixed.
+#[cfg(feature = "native")]
 #[test]
 fn read_and_tracked_messages_mixed_agree() -> Result<(), TestError> {
     let calls = ids(6);
@@ -481,9 +487,9 @@ fn read_and_tracked_messages_mixed_agree() -> Result<(), TestError> {
         .enumerate()
         .map(|(n, m)| {
             if n % 2 == 0 {
-                Step::Read(m)
+                Step::Read(Box::new(m))
             } else {
-                Step::Tracked(m)
+                Step::Tracked(Box::new(m))
             }
         })
         .collect();
@@ -536,7 +542,7 @@ fn a_message_without_a_call_id_adds_nothing() -> Result<(), TestError> {
     let store = run(
         branch_store(100, false),
         &["a@example.com"],
-        vec![Step::Read(parse(&raw, 0)?)],
+        vec![Step::Read(Box::new(parse(&raw, 0)?))],
     );
     assert!(store.dialogs.is_empty(), "no unit");
     Ok(())
@@ -570,6 +576,7 @@ fn a_call_refused_by_method_is_not_found() -> Result<(), TestError> {
 }
 
 /// A call the admission matcher refuses is not found.
+#[cfg(feature = "native")]
 #[test]
 fn a_call_refused_by_admission_is_not_found() -> Result<(), TestError> {
     let mut store = branch_store(100, false);
@@ -598,7 +605,7 @@ fn a_message_that_cannot_open_a_unit_is_not_found() -> Result<(), TestError> {
     run(
         branch_store(100, false),
         &["nc@example.com"],
-        vec![Step::Read(parse(&raw, 0)?)],
+        vec![Step::Read(Box::new(parse(&raw, 0)?))],
     );
     Ok(())
 }
@@ -791,7 +798,12 @@ fn a_replayed_merge_finds_the_unit_read_first() -> Result<(), TestError> {
     let mut store = branch_store(100, false);
     store.set_drop_methods(vec!["NOTIFY".to_string()]);
     let steps = vec![
-        Step::Read(request("BYE", "rp@example.com", 2, Some("z9hG4bK-b"))?),
+        Step::Read(Box::new(request(
+            "BYE",
+            "rp@example.com",
+            2,
+            Some("z9hG4bK-b"),
+        )?)),
         Step::Merge(vec![request(
             "INVITE",
             "rp@example.com",
@@ -931,6 +943,7 @@ fn get_under_branch_tracking_scans_nothing() -> Result<(), TestError> {
 }
 
 /// A batch-runner message under Branch tracking scans no key.
+#[cfg(feature = "native")]
 #[test]
 fn a_tracked_message_under_branch_tracking_scans_nothing() -> Result<(), TestError> {
     let mut store = filled(300)?;
