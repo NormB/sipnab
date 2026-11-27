@@ -5665,7 +5665,7 @@ struct ReceiveLoop {
     /// text, fail2ban, hexdump). Flushed whenever the packet
     /// channel goes idle — live output stays real-time — and at end of
     /// capture; `--line-buffer` flushes after every message.
-    sink: output::BatchSink<std::io::BufWriter<std::io::Stdout>>,
+    sink: output::BatchSink<output::sink::StdoutWriter>,
     /// Carries a packet's output, alerts and hook commands OUT of the
     /// section that holds both store write locks, so the syscalls they
     /// imply — `fork`/`exec` above all — happen with no lock held. Built
@@ -5743,11 +5743,13 @@ impl ReceiveLoop {
 
 /// Say on stderr, when it happens, that the per-message output to standard
 /// output failed (FILE-2 d). The end of the run says it again with
-/// `Failed to write output:` and exits 1; this line is the one a live
-/// capture's operator sees while the run goes on.
+/// `Failed to write output:` and exits 1, or 6 when standard output cannot
+/// be written at all; this line is the one a live capture's operator sees
+/// while the run goes on.
 fn report_first_output_failure(e: &std::io::Error) {
+    let code = crate::output::stdout::exit_code_for(e);
     stderr_line!(
-        "Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits 1."
+        "Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits {code}."
     );
 }
 
@@ -7408,12 +7410,19 @@ fn print_th_mappings(dialogs: &DialogStore, streams: &StreamStore, json: bool) -
 /// every other error means the output is incomplete. `print!` would panic on
 /// both, which is how `--report` to a full disk exited 101 with a backtrace
 /// while `-O` and `--json` reported the same condition as a clean failure.
+/// A standard output that cannot be written refuses the write, and the line
+/// goes to stderr directly: it explains the exit code, which `SIPNAB_LOG=off`
+/// must not hide.
 pub(crate) fn write_stdout(text: &str) -> bool {
     use std::io::Write;
-    let mut out = std::io::stdout().lock();
+    let mut out = crate::output::stdout::lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => true,
+        Err(e) if crate::output::stdout::is_unwritable(&e) => {
+            stderr_line!("Failed to write report: {e}");
+            false
+        }
         Err(e) => {
             tracing::error!("Failed to write report: {e}");
             false

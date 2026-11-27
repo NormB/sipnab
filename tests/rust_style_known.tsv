@@ -68,7 +68,7 @@ AssertWithoutMessage	src/capture/native.rs	26
 AssertWithoutMessage	src/capture/next_ex.rs	6
 AssertWithoutMessage	src/capture/output_guard.rs	21
 AssertWithoutMessage	src/capture/packet.rs	7
-AssertWithoutMessage	src/capture/parse.rs	269
+AssertWithoutMessage	src/capture/parse.rs	267
 AssertWithoutMessage	src/capture/pcap_reader.rs	22
 AssertWithoutMessage	src/capture/pcapng_meta.rs	14
 AssertWithoutMessage	src/capture/reassembly.rs	105

@@ -2119,8 +2119,21 @@ pub(crate) fn parse_sctp_fragment(packet: &Packet) -> Option<SctpFragment> {
     if ip_payload.ip_number.0 != 132 {
         return None;
     }
-    let chunk = find_sctp_data_chunk(ip_payload.payload, false)?;
-    let bytes = ip_payload.payload.get(chunk.payload.clone())?;
+    sctp_fragment_of(ip_payload.payload, &packet.data)
+}
+
+/// The first SCTP DATA *fragment* in `sctp`, a whole SCTP packet: the
+/// reassembled payload of an IP-fragmented one, read the way
+/// [`parse_sctp_fragment`] reads a packet that arrived whole.
+pub(crate) fn sctp_fragment_in(sctp: &bytes::Bytes) -> Option<SctpFragment> {
+    sctp_fragment_of(sctp, sctp)
+}
+
+/// The first DATA fragment of the SCTP packet `sctp`, its data a view of
+/// `backing` (the buffer `sctp` lies in).
+fn sctp_fragment_of(sctp: &[u8], backing: &bytes::Bytes) -> Option<SctpFragment> {
+    let chunk = find_sctp_data_chunk(sctp, false)?;
+    let bytes = sctp.get(chunk.payload.clone())?;
     Some(SctpFragment {
         src_port: chunk.src_port,
         dst_port: chunk.dst_port,
@@ -2129,7 +2142,7 @@ pub(crate) fn parse_sctp_fragment(packet: &Packet) -> Option<SctpFragment> {
         ssn: chunk.ssn,
         begin: chunk.begin,
         end: chunk.end,
-        data: slice_of(&packet.data, bytes),
+        data: slice_of(backing, bytes),
     })
 }
 
@@ -2317,16 +2330,22 @@ fn slice_of(data: &bytes::Bytes, child: &[u8]) -> bytes::Bytes {
 /// Re-parse the transport header from a reassembled IP payload.
 ///
 /// After IP-fragment reassembly the buffer is the full IP payload — i.e. the
-/// transport header (UDP/TCP) followed by the application data. The original
-/// fragment carried no usable transport header (non-first fragments have none,
-/// and the first fragment's UDP length covers the whole datagram), so the ports
-/// and the header length must be recovered here before the SIP/RTP parser sees
-/// the payload. Returns `(src_port, dst_port, transport, header_len)` or `None`
-/// for a truncated buffer or an unhandled protocol.
+/// transport header (UDP, TCP or SCTP) followed by the application data. The
+/// original fragment carried no usable transport header (non-first fragments
+/// have none, and the first fragment's UDP length covers the whole datagram),
+/// so the ports and the application data must be recovered here before the
+/// SIP/RTP parser sees the payload. Returns `(src_port, dst_port, transport,
+/// data)`, where `data` is the range of `payload` the SIP parser reads, or
+/// `None` for a truncated buffer or an unhandled protocol.
+///
+/// SCTP reads the datagram as [`parse_packet`] reads an unfragmented SCTP
+/// packet: `data` is the first complete (B+E) DATA chunk's user data, and
+/// empty when there is none, so the caller hands a DATA fragment to the SCTP
+/// reassembler ([`sctp_fragment_in`]) exactly as for a whole packet.
 pub(crate) fn reparse_transport(
     ip_protocol: u8,
     payload: &[u8],
-) -> Option<(u16, u16, TransportProto, usize)> {
+) -> Option<(u16, u16, TransportProto, std::ops::Range<usize>)> {
     match ip_protocol {
         17 => {
             // UDP: src(2) dst(2) len(2) cksum(2) = 8-byte fixed header.
@@ -2335,7 +2354,17 @@ pub(crate) fn reparse_transport(
             }
             let sp = u16::from_be_bytes([payload[0], payload[1]]);
             let dp = u16::from_be_bytes([payload[2], payload[3]]);
-            Some((sp, dp, TransportProto::Udp, 8))
+            Some((sp, dp, TransportProto::Udp, 8..payload.len()))
+        }
+        132 => {
+            // SCTP: a 12-byte common header, then chunks.
+            if payload.len() < 12 {
+                return None;
+            }
+            let sp = u16::from_be_bytes([payload[0], payload[1]]);
+            let dp = u16::from_be_bytes([payload[2], payload[3]]);
+            let data = find_sctp_data_chunk(payload, true).map_or(12..12, |c| c.payload);
+            Some((sp, dp, TransportProto::Sctp, data))
         }
         6 => {
             // TCP: data offset (high nibble of byte 12) in 32-bit words.
@@ -2348,7 +2377,7 @@ pub(crate) fn reparse_transport(
             if data_off < 20 || payload.len() < data_off {
                 return None;
             }
-            Some((sp, dp, TransportProto::Tcp, data_off))
+            Some((sp, dp, TransportProto::Tcp, data_off..payload.len()))
         }
         _ => None,
     }
@@ -3982,10 +4011,11 @@ mod tests {
         buf.extend_from_slice(&0u16.to_be_bytes()); // len (ignored)
         buf.extend_from_slice(&0u16.to_be_bytes()); // cksum
         buf.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n");
-        let (sp, dp, tp, hdr) = reparse_transport(17, &buf).ok_or("udp reparse")?;
+        let (sp, dp, tp, data) = reparse_transport(17, &buf).ok_or("udp reparse")?;
         assert_eq!((sp, dp), (5060, 5062));
         assert_eq!(tp, TransportProto::Udp);
-        assert_eq!(&buf[hdr..hdr + 7], b"OPTIONS");
+        assert_eq!(&buf[data.start..data.start + 7], b"OPTIONS");
+        assert_eq!(data.end, buf.len(), "the data runs to the end");
         Ok(())
     }
 
@@ -3997,10 +4027,10 @@ mod tests {
         buf[2..4].copy_from_slice(&40000u16.to_be_bytes());
         buf[12] = 5 << 4; // data offset = 5 words = 20 bytes, no options
         buf.extend_from_slice(b"INVITE");
-        let (sp, dp, tp, hdr) = reparse_transport(6, &buf).ok_or("tcp reparse")?;
+        let (sp, dp, tp, data) = reparse_transport(6, &buf).ok_or("tcp reparse")?;
         assert_eq!((sp, dp), (5060, 40000));
         assert_eq!(tp, TransportProto::Tcp);
-        assert_eq!(hdr, 20);
+        assert_eq!(data, 20..buf.len(), "the data follows the 20-byte header");
         Ok(())
     }
 
@@ -4010,8 +4040,149 @@ mod tests {
     fn reparse_transport_rejects_truncated_and_unknown() -> Result<(), TestError> {
         assert!(reparse_transport(17, &[0, 0, 0]).is_none()); // < 8 bytes
         assert!(reparse_transport(6, &[0u8; 10]).is_none()); // < 20 bytes
-        assert!(reparse_transport(132, &[0u8; 40]).is_none()); // SCTP: not handled
+        assert!(
+            reparse_transport(132, &[0u8; 11]).is_none(),
+            "SCTP < 12 bytes"
+        );
+        assert!(
+            reparse_transport(1, &[0u8; 40]).is_none(),
+            "ICMP: not handled"
+        );
         Ok(())
+    }
+
+    // ── reparse_transport: SCTP (SCTP-REASSEMBLED-NOT-READ) ────────────
+
+    /// The SCTP packet of `chunks` from 5060 to 5062.
+    fn sctp_bytes(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = sctp_common_header(5060, 5062);
+        for c in chunks {
+            v.extend_from_slice(c);
+        }
+        v
+    }
+
+    /// A complete DATA chunk's user data is the data.
+    #[test]
+    fn reparse_sctp_reads_a_complete_chunk() -> Result<(), TestError> {
+        let buf = sctp_bytes(&[sctp_data_chunk(0x03, b"OPTIONS sip:x SIP/2.0\r\n")]);
+        let (sp, dp, tp, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert_eq!((sp, dp), (5060, 5062), "the common header's ports");
+        assert_eq!(tp, TransportProto::Sctp, "SCTP");
+        assert_eq!(&buf[data], b"OPTIONS sip:x SIP/2.0\r\n", "the user data");
+        Ok(())
+    }
+
+    /// The data is the same range `parse_packet` reads from a whole packet.
+    #[test]
+    fn reparse_sctp_matches_the_whole_packet_path() -> Result<(), TestError> {
+        let buf = sctp_bytes(&[sctp_data_chunk(0x03, b"INVITE sip:x SIP/2.0\r\n")]);
+        let whole = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &buf);
+        let parsed = parse_packet(&make_packet(whole, DLT_EN10MB)?)?;
+        let (_, _, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert_eq!(
+            &buf[data],
+            &parsed.payload[..],
+            "one reading for both paths"
+        );
+        Ok(())
+    }
+
+    /// A chunk after a SACK is found.
+    #[test]
+    fn reparse_sctp_skips_a_bundled_control_chunk() -> Result<(), TestError> {
+        let sack = vec![3u8, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0xff, 0xff, 0, 0, 0, 0];
+        let buf = sctp_bytes(&[sack, sctp_data_chunk(0x03, b"BYE")]);
+        let (_, _, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert_eq!(&buf[data], b"BYE", "the DATA chunk behind the SACK");
+        Ok(())
+    }
+
+    /// A DATA fragment is no complete message: the data is empty, so the
+    /// caller hands it to the SCTP reassembler.
+    #[test]
+    fn reparse_sctp_leaves_a_fragment_to_the_reassembler() -> Result<(), TestError> {
+        let buf = sctp_bytes(&[sctp_data_chunk(0x02, b"INVITE part")]);
+        let (sp, dp, tp, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert_eq!(
+            (sp, dp, tp),
+            (5060, 5062, TransportProto::Sctp),
+            "header read"
+        );
+        assert!(data.is_empty(), "no complete chunk: {data:?}");
+        Ok(())
+    }
+
+    /// A header with no chunks has ports and no data.
+    #[test]
+    fn reparse_sctp_header_only_has_no_data() -> Result<(), TestError> {
+        let buf = sctp_bytes(&[]);
+        let (_, _, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert!(data.is_empty(), "no chunk: {data:?}");
+        Ok(())
+    }
+
+    /// A chunk whose length runs past the buffer yields no data.
+    #[test]
+    fn reparse_sctp_refuses_a_chunk_past_the_end() -> Result<(), TestError> {
+        let mut buf = sctp_bytes(&[sctp_data_chunk(0x03, b"INVITE")]);
+        buf[14..16].copy_from_slice(&200u16.to_be_bytes());
+        let (_, _, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert!(data.is_empty(), "fail closed: {data:?}");
+        Ok(())
+    }
+
+    /// A chunk length under its own header yields no data.
+    #[test]
+    fn reparse_sctp_refuses_a_chunk_length_under_four() -> Result<(), TestError> {
+        let mut buf = sctp_bytes(&[sctp_data_chunk(0x03, b"INVITE")]);
+        buf[14..16].copy_from_slice(&2u16.to_be_bytes());
+        let (_, _, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert!(data.is_empty(), "fail closed: {data:?}");
+        Ok(())
+    }
+
+    /// Exactly the 12-byte common header is enough to read the ports.
+    #[test]
+    fn reparse_sctp_accepts_exactly_the_common_header() -> Result<(), TestError> {
+        let buf = sctp_common_header(1, 2);
+        let (sp, dp, _, data) = reparse_transport(132, &buf).ok_or("sctp reparse")?;
+        assert_eq!((sp, dp), (1, 2), "ports");
+        assert!(data.is_empty(), "no chunk");
+        Ok(())
+    }
+
+    /// The fragment finder reads a reassembled buffer as it reads a frame.
+    #[test]
+    fn sctp_fragment_in_reads_a_begin_fragment() -> Result<(), TestError> {
+        let buf = bytes::Bytes::from(sctp_bytes(&[sctp_data_chunk_full(0x02, 7, 3, 9, b"part")]));
+        let frag = sctp_fragment_in(&buf).ok_or("a fragment")?;
+        assert_eq!((frag.src_port, frag.dst_port), (5060, 5062), "ports");
+        assert_eq!((frag.tsn, frag.sid, frag.ssn), (7, 3, 9), "placement");
+        assert!(frag.begin && !frag.end, "B only");
+        assert_eq!(&frag.data[..], b"part", "the data");
+        Ok(())
+    }
+
+    /// A complete chunk is not a fragment.
+    #[test]
+    fn sctp_fragment_in_skips_a_complete_chunk() {
+        let buf = bytes::Bytes::from(sctp_bytes(&[sctp_data_chunk(0x03, b"whole")]));
+        assert!(sctp_fragment_in(&buf).is_none(), "B+E is not a fragment");
+    }
+
+    /// A buffer shorter than the common header holds no fragment.
+    #[test]
+    fn sctp_fragment_in_refuses_a_short_buffer() {
+        let buf = bytes::Bytes::from(vec![0u8; 11]);
+        assert!(sctp_fragment_in(&buf).is_none(), "11 bytes");
+    }
+
+    /// An empty DATA fragment holds nothing.
+    #[test]
+    fn sctp_fragment_in_skips_an_empty_fragment() {
+        let buf = bytes::Bytes::from(sctp_bytes(&[sctp_data_chunk(0x01, b"")]));
+        assert!(sctp_fragment_in(&buf).is_none(), "empty E fragment");
     }
 
     /// Build a minimal Ethernet + IPv4 + UDP packet.

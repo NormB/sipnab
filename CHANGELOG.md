@@ -16,6 +16,19 @@ entry that carries them.
   - Effect: A `-N --quiet --analyze` run over a SIP-only capture runs 2.01% fewer instructions; the output and the exit status stay the same.
   - Limit: With `--dialog-track branch` each message still costs three lookups.
 
+### Fixed
+
+- **A run whose standard output is closed or read-only now fails and says why.**
+  - Was: With `>&-` or `1< file`, sipnab wrote nothing, printed nothing on stderr and reported success.
+  - Effect: The first write is refused, stderr names `standard output is closed` or `standard output is not open for writing`, and the run exits `6`.
+  - Limit: A run that writes nothing to standard output is not refused; `-O` and the other outputs are still written.
+  - Docs: [Notice when sipnab cannot write standard output](docs/output-formats.md#notice-when-sipnab-cannot-write-standard-output)
+- **SIP over SCTP is kept when it arrives as IP fragments or inside VLAN tags.**
+  - Was: A reassembled SCTP packet was not read for SIP, and the generated filter dropped its later fragments.
+  - Was: The generated filter dropped SCTP SIP inside VLAN, QinQ, PPPoE and MPLS, even when it was not fragmented.
+  - Effect: Both are stored on live capture and with `-I`, as SIP over UDP is.
+  - Docs: [The generated filter passes IP fragments](docs/encapsulations.md#the-generated-filter-passes-ip-fragments)
+
 ## [0.5.276] - 2026-11-26
 
 ### Fixed

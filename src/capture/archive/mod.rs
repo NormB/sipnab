@@ -2250,8 +2250,12 @@ pub fn release_run_and_exit(code: i32) -> ! {
         stderr_line!("{reason}");
     }
     // A run stopped by SIGHUP exits 129 where it would have exited 0, so a
-    // supervisor that restarts on failure restarts it (OPS-5).
-    std::process::exit(crate::signals::exit_code(code))
+    // supervisor that restarts on failure restarts it (OPS-5). A run whose
+    // standard output refused a write exits 6 where it would have exited 0
+    // or 1 (`crate::output::stdout::exit_code`).
+    std::process::exit(crate::signals::exit_code(crate::output::stdout::exit_code(
+        code,
+    )))
 }
 
 /// [`release_run`] from inside the panic hook, where blocking is not an

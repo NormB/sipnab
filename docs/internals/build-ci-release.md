@@ -155,7 +155,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 161 `unsafe` blocks are libc FFI.
+- Most of this crate's 163 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

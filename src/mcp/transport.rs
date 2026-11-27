@@ -71,6 +71,14 @@ use rmcp::ServiceExt;
 /// process behind, still capturing. The packet loop now checks the same flag
 /// and requests shutdown; see `app::batch::run`.
 pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
+    // Standard output is the protocol wire. When it cannot be written,
+    // tokio's stdout (std's underneath) reports every reply as written, and
+    // the client waits for answers that never come: refuse instead.
+    if let Some(why) = crate::output::stdout::unwritable() {
+        let e = crate::output::stdout::refusal(why);
+        crate::output::stdout::say_failed(&e);
+        return Err(e.into());
+    }
     // A confirmed `shutdown_server` stops the process only once its reply is
     // on stdout; see `super::stop`.
     let stop = super::stop::StopAfterReply::new(crate::signals::request_shutdown);

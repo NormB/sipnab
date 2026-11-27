@@ -21,8 +21,10 @@
 //! * `catch_unwind` without a `// catch_unwind: <reason>` comment. The guide
 //!   allows it only as defense in depth, never as the thing relied on.
 //! * Reaching into a poisoned lock (`PoisonError::into_inner`).
-//! * Code that runs before `main` (`#[ctor]`, `.init_array`), and unstable
-//!   `#![feature]`s.
+//! * Code that runs before `main` (`#[ctor]`, ELF `.init_array`, Mach-O
+//!   `__mod_init_func`) without a `// before-main: <reason>` comment, and
+//!   unstable `#![feature]`s. Reasoned before-main sites are also held to a
+//!   count, [`BEFORE_MAIN_SITES`], so a new one is a reviewed change.
 //!
 //! A reason must be at least three words, so a marker cannot be a bare waiver.
 //! Sites that predate the gate are listed in [`KNOWN`] by file and count, and
@@ -402,6 +404,36 @@ fn justification(lexed: &Lexed, i: usize) -> String {
     text
 }
 
+/// The 1-based lines of `src` that run code before main with a
+/// `before-main:` reason; [`BEFORE_MAIN_SITES`] holds their number.
+fn reasoned_before_main(src: &str) -> Vec<usize> {
+    let lexed = lex(src);
+    (0..lexed.code.len())
+        .filter(|&i| before_main_at(&lexed, src, i) && reasoned_before_main_at(&lexed, i))
+        .map(|i| i + 1)
+        .collect()
+}
+
+/// Whether line `i` (0-based) registers code to run before main: a
+/// `#[ctor]`/`#[dtor]`, or a link section that the loader runs, ELF
+/// `.init_array` or Mach-O `__mod_init_func`. The section name sits in a
+/// string, which the lexed code blanks, so it is read from the raw line.
+fn before_main_at(lexed: &Lexed, src: &str, i: usize) -> bool {
+    let code = &lexed.code[i];
+    code.contains("#[ctor")
+        || code.contains("#[dtor")
+        || (code.contains("link_section")
+            && src
+                .lines()
+                .nth(i)
+                .is_some_and(|l| l.contains(".init_array") || l.contains("__mod_init_func")))
+}
+
+/// Whether the before-main site on line `i` carries a `before-main:` reason.
+fn reasoned_before_main_at(lexed: &Lexed, i: usize) -> bool {
+    reasoned(&justification(lexed, i), "before-main:")
+}
+
 /// Whether `text` holds `marker` followed by a reason of at least three words.
 fn reasoned(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(at, _)| {
@@ -568,14 +600,7 @@ fn scan(src: &str, non_leaf: bool) -> Vec<(Rule, usize)> {
         if poison {
             found.push((Rule::PoisonedLock, i + 1));
         }
-        let before_main = code.contains("#[ctor")
-            || code.contains("#[dtor")
-            || (code.contains("link_section")
-                && src
-                    .lines()
-                    .nth(i)
-                    .is_some_and(|l| l.contains(".init_array")));
-        if before_main {
+        if before_main_at(&lexed, src, i) && !reasoned_before_main_at(&lexed, i) {
             found.push((Rule::CodeBeforeMain, i + 1));
         }
         if code.trim_start().starts_with("#![feature(") {
@@ -912,6 +937,108 @@ fn marker_rules() {
         rules("use std::panic::catch_unwind;\n").is_empty(),
         "importing it is not using it"
     );
+}
+
+/// Life before main: ELF `.init_array` and Mach-O `__mod_init_func`, each
+/// refused unless a `// before-main: <reason>` comment of three or more words
+/// sits on or above it (2026-11-26, owner-approved for one site: the
+/// closed-stdout probe in src/output/stdout.rs).
+#[test]
+fn before_main_rules() {
+    let rules = |src: &str| -> Vec<Rule> { scan(src, false).into_iter().map(|(r, _)| r).collect() };
+    let macho = "#[unsafe(link_section = \"__DATA,__mod_init_func\")]\nstatic F: extern \"C\" fn() = init;\n";
+    assert_eq!(
+        rules(macho),
+        [Rule::CodeBeforeMain],
+        "Mach-O, edition 2024 spelling"
+    );
+    let macho_old =
+        "#[link_section = \"__DATA,__mod_init_func\"]\nstatic F: extern \"C\" fn() = init;\n";
+    assert_eq!(
+        rules(macho_old),
+        [Rule::CodeBeforeMain],
+        "Mach-O, older spelling"
+    );
+    let reasoned_elf = concat!(
+        "// before-main: std reopens a closed descriptor before main.\n",
+        "#[unsafe(link_section = \".init_array\")]\nstatic F: extern \"C\" fn() = init;\n",
+    );
+    assert!(
+        rules(reasoned_elf).is_empty(),
+        "a reasoned .init_array: {:?}",
+        rules(reasoned_elf)
+    );
+    let reasoned_macho = concat!(
+        "// before-main: std reopens a closed descriptor before main.\n",
+        "#[used]\n#[unsafe(link_section = \"__DATA,__mod_init_func\")]\n",
+        "static F: extern \"C\" fn() = init;\n",
+    );
+    assert!(
+        rules(reasoned_macho).is_empty(),
+        "a reasoned __mod_init_func: {:?}",
+        rules(reasoned_macho)
+    );
+    let terse =
+        "// before-main: needed\n#[unsafe(link_section = \".init_array\")]\nstatic F: fn() = f;\n";
+    assert_eq!(rules(terse), [Rule::CodeBeforeMain], "a one-word reason");
+    let other_marker = "// SAFETY: it is fine here.\n#[unsafe(link_section = \".init_array\")]\nstatic F: fn() = f;\n";
+    assert_eq!(
+        rules(other_marker),
+        [Rule::CodeBeforeMain],
+        "another marker is no reason"
+    );
+    let ctor = "// before-main: a reason of many words.\n#[ctor]\nfn init() {}\n";
+    assert!(
+        rules(ctor).is_empty(),
+        "a reasoned #[ctor]: {:?}",
+        rules(ctor)
+    );
+    let quoted = "let s = \"// before-main: a reason of many words.\";\n#[unsafe(link_section = \".init_array\")]\nstatic F: fn() = f;\n";
+    assert_eq!(
+        rules(quoted),
+        [Rule::CodeBeforeMain],
+        "a marker inside a string"
+    );
+    assert_eq!(
+        reasoned_before_main(reasoned_macho),
+        [3],
+        "the reasoned site is counted on its section line"
+    );
+    assert!(
+        reasoned_before_main("#[unsafe(link_section = \".text\")]\nfn f() {}\n").is_empty(),
+        "another link section is not before main"
+    );
+}
+
+/// The number of reasoned before-main sites in the tree. Two: the ELF and
+/// the Mach-O registration of the one probe in src/output/stdout.rs that
+/// records a standard output closed before the standard library reopens it
+/// on `/dev/null`. A further site needs this number raised in review, not
+/// only a comment.
+const BEFORE_MAIN_SITES: usize = 2;
+
+/// Reasoned before-main sites are held to [`BEFORE_MAIN_SITES`].
+#[test]
+fn before_main_sites_are_held_to_their_ratchet() -> Result<(), TestError> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listed = tracked::ls_files(root, &["--", "*.rs"])?;
+    let mut sites = Vec::new();
+    for rel in listed.iter().map(String::as_str) {
+        let path = root.join(rel);
+        if rel.is_empty() || path.is_symlink() || !path.is_file() {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path)?;
+        for line in reasoned_before_main(&src) {
+            sites.push(format!("{rel}:{line}"));
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        BEFORE_MAIN_SITES,
+        "reasoned before-main sites: {sites:?}; a new one needs BEFORE_MAIN_SITES raised in review"
+    );
+    Ok(())
 }
 
 #[test]

@@ -1958,7 +1958,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // "Find your symptom" row and the section's link to encapsulations.md),
     // docs/encapsulations.md 1, docs/errors.md 1, docs/prometheus-metrics.md 1
     // and docs/rest-api.md 1 (each links "Requests missing, replies present").
-    const EXPECTED_WIKI_LINKS: usize = 2776;
+    // 2776 -> 2780 (STDOUT-EBADF-SILENT-SUCCESS, +4): docs/cli-reference.md's
+    // exit-code `6` row and docs/errors.md's first-failure entry link "Notice
+    // when sipnab cannot write standard output"; docs/output-formats.md 2 (the
+    // NDJSON how-to's troubleshoot item links that how-to, and that how-to's
+    // troubleshoot item links back).
+    const EXPECTED_WIKI_LINKS: usize = 2780;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

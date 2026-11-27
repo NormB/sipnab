@@ -5769,8 +5769,12 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     if let Some(shell) = cli.config_args.completions {
         use clap::CommandFactory;
         let mut cmd = crate::cli::Cli::command();
-        clap_complete::generate(shell, &mut cmd, "sipnab", &mut std::io::stdout());
-        return Some(0);
+        // Into a buffer first: `generate` panics when its writer fails, and
+        // the buffer goes out through the checked standard output.
+        let mut script = Vec::new();
+        clap_complete::generate(shell, &mut cmd, "sipnab", &mut script);
+        let script = String::from_utf8_lossy(&script);
+        return Some(i32::from(!super::batch::write_stdout(&script)));
     }
 
     // --print-yang-module: the module the RFC 7951 export validates against.
@@ -5836,7 +5840,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 /// `0` when the module was written, `1` when stdout refused it.
 fn print_yang_module() -> i32 {
     use std::io::Write;
-    let mut out = std::io::stdout().lock();
+    let mut out = crate::output::stdout::lock();
     match out
         .write_all(crate::analysis::yang::MODULE_TEXT.as_bytes())
         .and_then(|()| out.flush())
@@ -6680,8 +6684,9 @@ pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
         match serde_json::to_string_pretty(&status) {
             Ok(text) => {
                 use std::io::Write as _;
-                let mut out = std::io::stdout().lock();
-                if writeln!(out, "{text}").and_then(|()| out.flush()).is_err() {
+                let mut out = crate::output::stdout::lock();
+                if let Err(e) = writeln!(out, "{text}").and_then(|()| out.flush()) {
+                    crate::output::stdout::say_failed(&e);
                     return Some(1);
                 }
                 Some(0)
@@ -8381,8 +8386,9 @@ fn port_pair_at(off: usize, lo: u16, hi: u16) -> String {
     format!("({} or {})", one(off), one(off + 2))
 }
 
-/// "An IPv4 or IPv6 datagram starts at `ip_off` and carries UDP or TCP with a
-/// signaling port", as absolute-offset BPF terms.
+/// "An IPv4 or IPv6 datagram starts at `ip_off` and carries UDP, TCP or SCTP
+/// with a signaling port", as absolute-offset BPF terms. The three put their
+/// source and destination ports in the same first four bytes.
 ///
 /// IPv4 is pinned to `0x45` — version 4, header length 5 words — because the
 /// port offset has to be a constant and BPF cannot multiply the IHL nibble
@@ -8393,12 +8399,13 @@ fn port_pair_at(off: usize, lo: u16, hi: u16) -> String {
 /// matching does.
 ///
 /// Fragments are taken by a test of their own beside the port test (issue
-/// #926): every fragment of a UDP, TCP or ESP datagram, the first included,
+/// #926): every fragment of a UDP, TCP, ESP or SCTP datagram, the first included,
 /// from [`crate::capture::fragment_filter`]. That test reads only fixed
 /// fields, so it also takes a first fragment whose IPv4 header has options.
 fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
     let v4 = format!(
-        "(ether[{ip_off}] = 0x45 and (ether[{proto}] = 17 or ether[{proto}] = 6) \
+        "(ether[{ip_off}] = 0x45 and (ether[{proto}] = 17 or ether[{proto}] = 6 \
+         or ether[{proto}] = 132) \
          and ether[{frag}:2] & 0x1fff = 0 and {ports})",
         proto = ip_off + 9,
         frag = ip_off + 6,
@@ -8406,7 +8413,8 @@ fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
     );
     let v4_fragment = crate::capture::fragment_filter::ipv4_fragment_at(ip_off);
     let v6 = format!(
-        "(ether[{ip_off}] & 0xf0 = 0x60 and (((ether[{nh}] = 17 or ether[{nh}] = 6) \
+        "(ether[{ip_off}] & 0xf0 = 0x60 and (((ether[{nh}] = 17 or ether[{nh}] = 6 \
+         or ether[{nh}] = 132) \
          and {ports}) or {fragment}))",
         nh = ip_off + 6,
         ports = port_pair_at(ip_off + 40, lo, hi),
@@ -12607,12 +12615,14 @@ mod tests {
     /// it any protocol whose 21st and 23rd payload bytes happen to read as a
     /// signaling port would be delivered.
     ///
-    /// The three frames differ in exactly one byte — the protocol field.
+    /// The frames differ in exactly one byte — the protocol field. SCTP
+    /// (132) puts its ports where UDP and TCP do, and sipnab reads SIP in it
+    /// (SCTP-REASSEMBLED-NOT-READ: tagged SCTP was dropped in the kernel).
     #[test]
-    fn encapsulated_arms_match_udp_and_tcp_and_nothing_else() -> Result<(), TestError> {
+    fn encapsulated_arms_match_udp_tcp_and_sctp_and_nothing_else() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
-        for (proto, expected) in [(17u8, 1usize), (6, 1), (47, 0), (50, 0), (1, 0)] {
+        for (proto, expected) in [(17u8, 1usize), (6, 1), (132, 1), (47, 0), (50, 0), (1, 0)] {
             assert_eq!(
                 count_frames(
                     dir.path(),
@@ -13459,13 +13469,62 @@ mod tests {
         Ok(())
     }
 
+    /// A later SCTP fragment passes untagged and in every encapsulation the
+    /// generated filter probes (SCTP-REASSEMBLED-NOT-READ).
+    #[test]
+    fn the_generated_filter_passes_sctp_fragments_in_every_encapsulation() -> Result<(), TestError>
+    {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let later = frag::ipv4(132, 185, &[], &[0u8; 96]);
+        let mut frames = vec![untagged(eth, &later)];
+        let encapsulated = encapsulations_of(eth, &later);
+        let count = 1 + encapsulated.len();
+        frames.extend(encapsulated.into_iter().map(|(_, f)| f));
+        assert_eq!(
+            count_frames(dir.path(), "sctp", DLT_EN10MB, &frames, &filter)?,
+            count,
+            "every SCTP fragment passes"
+        );
+        let v6 = frag::ipv6_fragment(132, 181, false, &[0u8; 96]);
+        let mut frames6 = vec![untagged(eth, &v6)];
+        frames6.extend(encapsulations_of(eth, &v6).into_iter().map(|(_, f)| f));
+        let count6 = frames6.len();
+        assert_eq!(
+            count_frames(dir.path(), "sctp6", DLT_EN10MB, &frames6, &filter)?,
+            count6,
+            "every IPv6 SCTP fragment passes"
+        );
+        Ok(())
+    }
+
+    /// A whole SCTP datagram to a signaling port passes untagged and in every
+    /// encapsulation the generated filter probes.
+    #[test]
+    fn the_generated_filter_passes_tagged_whole_sctp() -> Result<(), TestError> {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let mut sctp = vec![0x13, 0xc4, 0x13, 0xc4, 0, 0, 0, 1, 0, 0, 0, 0];
+        sctp.extend_from_slice(&[0u8; 32]);
+        let whole = frag::ipv4(132, 0x4000, &[], &sctp);
+        let mut frames = vec![untagged(eth, &whole)];
+        frames.extend(encapsulations_of(eth, &whole).into_iter().map(|(_, f)| f));
+        let count = frames.len();
+        assert_eq!(
+            count_frames(dir.path(), "sctpw", DLT_EN10MB, &frames, &filter)?,
+            count,
+            "every whole SCTP datagram to port 5060 passes"
+        );
+        Ok(())
+    }
+
     /// Fragments of protocols reassembly reads nothing from stay in the
     /// kernel, tagged or not: the fragment arm is not a firehose.
     #[test]
     fn the_generated_filter_rejects_fragments_of_other_protocols() -> Result<(), TestError> {
         let filter = auto_bpf_filter(5060, 5061, &[]);
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
-        for proto in [1u8, 47, 132] {
+        for proto in [1u8, 47, 51] {
             let later = frag::ipv4(proto, 185, &[], &[0u8; 96]);
             let mut frames = vec![untagged(eth, &later)];
             frames.extend(encapsulations_of(eth, &later).into_iter().map(|(_, f)| f));

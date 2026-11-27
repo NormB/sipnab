@@ -302,9 +302,61 @@ Troubleshoot:
   Pass `--line-buffer` to write each message as sipnab makes it.
 - **No line, but the file is short.** Standard output went to a pipe whose
   reader stopped. sipnab does not count that as a failure.
-- **No line and exit 0 with standard output opened read-only.** The write
-  fails with "bad file descriptor", and Rust's standard library reports that
-  error on standard output as a successful write, so sipnab never sees it.
+- **Exit 6 and the line names `standard output is closed` or `standard
+  output is not open for writing`.** sipnab cannot write standard output at all;
+  see [Notice when sipnab cannot write standard output](#notice-when-sipnab-cannot-write-standard-output).
+
+### Notice when sipnab cannot write standard output
+
+A run started with standard output closed (`>&-`) or opened read-only
+(`1< file`) has nowhere to put its output. sipnab refuses the first write to
+it, prints the reason on standard error, and exits 6. This applies to the
+printed messages, `--json`, `--json-pretty`, `--report`, `--dump-config`,
+`--help`, `--version`, `--completions`, `--print-yang-module`, `sipnab fleet`,
+`sipnab g729` and the MCP stdio server (`--mcp`). The `-O` file, the vCon
+files and the other outputs are still written. A run that writes nothing to
+standard output is not refused.
+
+Prerequisites: a sipnab binary newer than 0.5.276. Nothing changes on other
+systems. A supervisor that starts sipnab must give it a standard output open
+for writing: a file, a pipe, the journal, or `/dev/null`.
+
+Steps:
+
+1. Send standard error where you read it: the terminal, the journal under a
+   systemd unit, or a file with `2> sipnab.err`.
+2. Check the exit code for `6`, and standard error for `standard output is
+   closed` or `standard output is not open for writing`.
+3. Start the run again with standard output open for writing, for example
+   `> sip.ndjson` or `> /dev/null`.
+
+Verify: open standard output read-only, then close it.
+
+```bash
+# Run all of these, in order.
+SIPNAB_LOG=off sipnab -N --json -I tests/fixtures/sip_call.pcap 1< /dev/null
+echo $?
+SIPNAB_LOG=off sipnab --version >&-
+echo $?
+```
+
+```text
+Writing standard output failed: standard output is not open for writing. The run continues; its per-message output is incomplete, and it exits 6.
+Failed to write output: standard output is not open for writing
+6
+writing to standard output failed: standard output is closed
+6
+```
+
+Troubleshoot:
+
+- **Exit 6 under a service manager.** The unit or script closes standard
+  output. Under systemd, set `StandardOutput=journal` or `StandardOutput=null`.
+- **Exit 0 with no output, and standard output is `/dev/null`.** That is a
+  writable output; sipnab writes to it and the system discards the text.
+- **Exit 1, not 6.** Standard output was writable and a write failed for
+  another reason, such as a full disk; see
+  [Notice when sipnab cannot write the NDJSON file](#notice-when-sipnab-cannot-write-the-ndjson-file).
 
 ### Pretty-printed JSON (`--json-pretty`)
 

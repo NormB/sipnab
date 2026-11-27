@@ -1553,6 +1553,9 @@ Internal failure \(em sipnab panicked. Its panic hook writes a crash report and 
 .B 4
 Stopped for disk space: the free space under an output fell below \fB\-\-min\-free\-disk\fR. The last stderr line names the directory, its free bytes and the floor. Below the floor before the capture opened, the run did not start. A run that would have exited non\-zero for its own reason keeps that code. See Stop a capture before the disk fills.
 .TP
+.B 6
+sipnab could not write standard output: the shell closed it before sipnab started (\fB>&\-\fR), or opened it but not for writing (read\-only). sipnab refuses the first write and names the reason on stderr: \fBstandard output is closed\fR or \fBstandard output is not open for writing\fR. The run still writes its other outputs, such as \fB\-O\fR. A run that would have exited \fB0\fR or \fB1\fR exits \fB6\fR; a run with any other code keeps it. A run that writes nothing to standard output is not affected. See Notice when sipnab cannot write standard output.
+.TP
 .B 129
 Stopped by \fBSIGHUP\fR, or the terminal of a terminal interface run went away. sipnab stops as it does for \fBSIGTERM\fR, which exits \fB0\fR like \fBSIGINT\fR, and exits \fB129\fR instead, so a supervisor that restarts on failure restarts it. A run that would have exited non\-zero keeps that code.
 .TP

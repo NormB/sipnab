@@ -8,7 +8,7 @@
 //! conventional terminal capture output.
 
 use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::io::Write;
 
 use chrono::{DateTime, Utc};
 
@@ -95,8 +95,7 @@ pub fn print_sip_message(
     prev_timestamp: Option<DateTime<Utc>>,
 ) {
     let output = format_sip_message(msg, opts, prev_timestamp);
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
+    let mut handle = crate::output::stdout::lock();
     // Best-effort write; don't panic on broken pipe
     let _ = handle.write_all(output.as_bytes());
     let _ = handle.flush();

@@ -52,13 +52,18 @@ pub struct BatchSink<W: Write> {
 /// What [`BatchSink`] calls with its first hard error.
 pub type FirstFailure = Box<dyn FnMut(&std::io::Error) + Send>;
 
-impl BatchSink<std::io::BufWriter<std::io::Stdout>> {
+/// The production sink's writer: a buffer in front of checked stdout.
+pub type StdoutWriter = std::io::BufWriter<crate::output::stdout::Checked<std::io::Stdout>>;
+
+impl BatchSink<StdoutWriter> {
     /// Production sink: a 64 KiB buffer in front of stdout. Stdout's own
     /// line buffering only sees whole buffer fills, so per-message
-    /// `write(2)` syscalls collapse to a couple per 64 KiB.
+    /// `write(2)` syscalls collapse to a couple per 64 KiB. A standard
+    /// output that cannot be written refuses the first write, which this
+    /// sink keeps as its hard error (`crate::output::stdout::Checked`).
     pub fn stdout(line_buffer: bool) -> Self {
         Self::new(
-            std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout()),
+            std::io::BufWriter::with_capacity(64 * 1024, crate::output::stdout::handle()),
             line_buffer,
         )
     }

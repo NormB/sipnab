@@ -1801,13 +1801,28 @@ impl PacketProcessor {
                             }
                         }
                     }
-                    if let Some((sp, dp, tp, hdr)) =
+                    if let Some((sp, dp, tp, data)) =
                         parse::reparse_transport(completed.ip_protocol, &reassembled)
                     {
                         completed.src_port = sp;
                         completed.dst_port = dp;
                         completed.transport = tp;
-                        completed.payload = bytes::Bytes::copy_from_slice(&reassembled[hdr..]);
+                        if tp == parse::TransportProto::Sctp {
+                            // The same SCTP path as a packet that arrived
+                            // whole: a complete DATA chunk is the message; a
+                            // DATA fragment goes to the SCTP reassembler.
+                            let sctp = bytes::Bytes::from(reassembled);
+                            completed.payload = sctp.slice(data);
+                            completed.fragment_offset = Some(0);
+                            completed.more_fragments = false;
+                            if completed.payload.is_empty()
+                                && let Some(frag) = parse::sctp_fragment_in(&sctp)
+                            {
+                                return self.sctp_fragment(completed, &frag);
+                            }
+                            return smallvec![completed];
+                        }
+                        completed.payload = bytes::Bytes::copy_from_slice(&reassembled[data]);
                         if tp == parse::TransportProto::Tcp {
                             // The reassembled datagram is one TCP segment of an
                             // ongoing stream, not a complete unit: recover its
@@ -1859,19 +1874,7 @@ impl PacketProcessor {
             && parsed.payload.is_empty()
             && let Some(frag) = parse::parse_sctp_fragment(packet)
         {
-            let src = std::net::SocketAddr::new(parsed.src_addr, frag.src_port);
-            let dst = std::net::SocketAddr::new(parsed.dst_addr, frag.dst_port);
-            return match self.sctp_reassembler.insert(src, dst, &frag) {
-                Some(payload) => {
-                    let mut completed = parsed;
-                    completed.src_port = frag.src_port;
-                    completed.dst_port = frag.dst_port;
-                    completed.payload = payload;
-                    smallvec![completed]
-                }
-                // A buffered fragment (or a fail-closed drop) emits nothing yet.
-                None => SmallVec::new(),
-            };
+            return self.sctp_fragment(parsed, &frag);
         }
 
         // UDP (and other non-TCP, non-fragment): ready immediately
@@ -1886,6 +1889,25 @@ impl PacketProcessor {
             self.resynced_streams.remove(0);
         }
         self.resynced_streams.push((src, dst));
+    }
+
+    /// SCTP arm of `process_inner`: feed one DATA fragment of `parsed` (a
+    /// packet that arrived whole, or an IP-reassembled datagram) to the SCTP
+    /// reassembler, and emit the message on the fragment that completes it.
+    fn sctp_fragment(&mut self, parsed: ParsedPacket, frag: &parse::SctpFragment) -> ParsedPackets {
+        let src = std::net::SocketAddr::new(parsed.src_addr, frag.src_port);
+        let dst = std::net::SocketAddr::new(parsed.dst_addr, frag.dst_port);
+        match self.sctp_reassembler.insert(src, dst, frag) {
+            Some(payload) => {
+                let mut completed = parsed;
+                completed.src_port = frag.src_port;
+                completed.dst_port = frag.dst_port;
+                completed.payload = payload;
+                smallvec![completed]
+            }
+            // A buffered fragment (or a fail-closed drop) emits nothing yet.
+            None => SmallVec::new(),
+        }
     }
 
     /// TCP arm of `process_inner`: feed the segment (fresh from capture or an

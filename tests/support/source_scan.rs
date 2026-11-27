@@ -21,15 +21,20 @@
 //!   discarding every `KeyCode::Char('…')` the dispatcher handles.
 //!
 //! What the gates actually mean is "stop at the test MODULE", so that is what
-//! this cuts at: the first `#[cfg(test)]` whose item is a `mod` declaration.
+//! this cuts at: the first `#[cfg(test)]` whose item is a `mod` with a body.
 //! Comments are stripped before the attribute is recognized, and a
 //! `#[cfg(test)]` on anything else is stepped over rather than obeyed.
+//! A `#[cfg(test)] mod x;` declaration names a module in another file: it
+//! cuts only when nothing but further such declarations, comments and blank
+//! lines follow it. Mid-file it is stepped over; until 2026-11-26 it cut, and
+//! `src/tui/mod.rs` was read to line 66 of 6,230.
 //!
 //! A gate silenced this way cannot be told apart from a gate that found
 //! nothing, which is why the rule lives in one place with its own self-tests
-//! (`tests/support_selftest.rs`) instead of once per gate by hand. Five gates
-//! call it: `cli_help_test`, `keybinding_drift_test`, `surface_parity_test`,
-//! `metrics_docs_drift_test`, and `flag_coverage_test`.
+//! (`tests/support_selftest.rs`) instead of once per gate by hand. The gates
+//! that call it include `cli_help_test`, `keybinding_drift_test`,
+//! `surface_parity_test`, `metrics_docs_drift_test`, `flag_coverage_test`,
+//! `error_reference_test` and `gate_coupling_test`.
 //!
 //! The last of those wants the OTHER side of the cut — the test module — and
 //! takes it as `&src[production_source(src).len()..]`, which is why the result
@@ -58,6 +63,12 @@ pub fn production_source(src: &str) -> &str {
     let mut offset = 0usize;
     // Byte offset of a `#[cfg(test)]` line whose item is on a later line.
     let mut pending: Option<usize> = None;
+    // Byte offset of an out-of-line test module declaration (`mod x;`) with
+    // no code after it yet. The module lives in another file, so the
+    // declaration ends the production part only when nothing but further
+    // such declarations, comments and blank lines follow it; mid-file
+    // (src/tui/mod.rs lines 67-68) the code after it is production code.
+    let mut trailing: Option<usize> = None;
 
     for line in src.split_inclusive('\n') {
         let start = offset;
@@ -77,10 +88,16 @@ pub fn production_source(src: &str) -> &str {
             if rest.is_empty() {
                 pending = Some(start);
             } else if is_mod_decl(rest) {
-                // `#[cfg(test)] mod tests;` — attribute and item on one line.
-                return &src[..start];
+                // `#[cfg(test)] mod tests;` or `... mod tests {` on one line.
+                if is_out_of_line(rest) {
+                    trailing.get_or_insert(start);
+                } else {
+                    return &src[..trailing.unwrap_or(start)];
+                }
+                pending = None;
             } else {
                 pending = None;
+                trailing = None;
             }
             continue;
         }
@@ -91,14 +108,26 @@ pub fn production_source(src: &str) -> &str {
             continue;
         }
 
-        if let Some(attr_start) = pending.take()
-            && is_mod_decl(trimmed)
-        {
-            return &src[..attr_start];
+        match pending.take() {
+            Some(attr_start) if is_mod_decl(trimmed) => {
+                if is_out_of_line(trimmed) {
+                    trailing.get_or_insert(attr_start);
+                } else {
+                    return &src[..trailing.unwrap_or(attr_start)];
+                }
+            }
+            // Any other code: the declarations before it were mid-file.
+            _ => trailing = None,
         }
     }
 
-    src
+    &src[..trailing.unwrap_or(src.len())]
+}
+
+/// Whether the module declaration `code` (already trimmed, comment-free)
+/// names a module in another file (`mod x;`) rather than opening a body.
+fn is_out_of_line(code: &str) -> bool {
+    code.trim_end().ends_with(';')
 }
 
 /// A line with its `//` comment tail removed.

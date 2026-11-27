@@ -118,8 +118,7 @@ impl EvidenceSink {
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         match self {
             Self::Stdout => {
-                let out = std::io::stdout();
-                let mut lock = out.lock();
+                let mut lock = crate::output::stdout::lock();
                 writeln!(lock, "{line}")?;
                 lock.flush()
             }
