@@ -10,6 +10,11 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--dialog-track branch` no longer slows down with the square of the call count.**
+  - Effect: A branch-tracked run over 40,000 SIP packets runs 94% fewer instructions; the output and the exit status stay the same.
+
 ### Fixed
 
 - **The plugin runtime is built with wasmi 2.0.3; crates.io yanked 2.0.2.**
