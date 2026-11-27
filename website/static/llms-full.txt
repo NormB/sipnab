@@ -90200,6 +90200,7 @@ The matrix has moved twice.
   - Pull request #826 passed every local gate and failed the `g729` row in CI: a function only `vcon` and `api` code called was never used with `g729` alone.
   - A file's feature gate comes from the `cfg` attributes on the `mod` lines that lead to it, and from the inner `cfg` attribute of a test target. Cargo's `[features]` table says which features a row turns on.
   - No Rust or Cargo file changed: only the rows marked `hook`.
+  - A change to `Cargo.toml` or `Cargo.lock` that only moves sipnab's own version, as a release does, counts as no change.
   - Every changed Rust file is behind a gate: for each gate, the rows with the fewest features that compile it, and the rows marked `hook`.
   - Any other change, or changes the script cannot read: every single-feature row the hook can lint (12 today) and the 3 rows marked `hook`. The other 7 combinations stay in CI.
   - That fallback cannot catch a defect that needs two features in a file outside every gated module. CI still runs every row.
