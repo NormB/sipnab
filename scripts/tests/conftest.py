@@ -15,23 +15,37 @@ import pytest
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 
 
+def _hook_git_variables(environ) -> list[str]:
+    """The variables a calling git exported: every GIT_* name in `environ`."""
+    return [key for key in environ if key.startswith("GIT_")]
+
+
+# `git commit` runs the pre-commit hook with GIT_DIR and GIT_INDEX_FILE set,
+# and every child git inherits them -- `git -C <tmp>` included, because the
+# environment wins over -C's discovery. A fixture's `git add` then writes the
+# REAL repository's index: a phantom `docs/public.md` on 2026-09-17, and on
+# 2026-09-24, in a linked worktree where both paths are absolute, the
+# rfc-links fixture replaced the whole index and its `git init` set
+# `core.bare = true` in the config the main checkout shares.
+#
+# They are dropped here, when pytest imports this file, before it imports any
+# test module or sets up any fixture. The autouse fixture below ran too late
+# for two kinds of code: a test module's import-time code, and a fixture of
+# module or session scope, which pytest sets up before the function-scoped
+# fixtures of the first test that uses it. On 2026-11-27 the module-scoped
+# fixture of test_feature_rows_for_history.py ran `git init`, `git add -A`
+# and `git commit` under the hook's variables: twelve commits on the branch
+# being committed, its index replaced, and `core.bare = true` in the shared
+# config again. test_hook_env_isolation.py holds both places to this.
+for _key in _hook_git_variables(os.environ):
+    del os.environ[_key]
+
+
 @pytest.fixture(autouse=True)
 def _isolate_from_the_hook(monkeypatch):
-    """Drop every GIT_* variable the calling git exported, for every test.
-
-    `git commit` runs the pre-commit hook with GIT_DIR and GIT_INDEX_FILE set,
-    and every child git inherits them -- `git -C <tmp>` included, because the
-    environment wins over -C's discovery. A fixture's `git add` then writes the
-    REAL repository's index: a phantom `docs/public.md` on 2026-09-17, and on
-    2026-09-24, in a linked worktree where both paths are absolute, the
-    rfc-links fixture replaced the whole index and its `git init` set
-    `core.bare = true` in the config the main checkout shares. One copy of
-    this lived in test_check_line_drift.py and covered that file alone;
-    test_hook_env_isolation.py holds every fixture that runs git to it.
-    """
-    for key in list(os.environ):
-        if key.startswith("GIT_"):
-            monkeypatch.delenv(key)
+    """Drop, for every test, a GIT_* variable that a test before it set."""
+    for key in _hook_git_variables(list(os.environ)):
+        monkeypatch.delenv(key)
 
 
 def _git_out(repo, *args):
